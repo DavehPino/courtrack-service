@@ -4,12 +4,22 @@
   "buildCommand": "npm run typecheck",
   "outputDirectory": "public",
   "functions": {
-    "api/sync.ts": { "maxDuration": 60 }
+    "api/sync.ts": {
+      "maxDuration": 60
+    },
+    "api/courtrack/[resource].ts": {
+      "maxDuration": 60
+    }
   },
   "headers": [
     {
       "source": "/(.*)",
-      "headers": [{ "key": "X-Robots-Tag", "value": "noindex, nofollow" }]
+      "headers": [
+        {
+          "key": "X-Robots-Tag",
+          "value": "noindex, nofollow"
+        }
+      ]
     }
   ]
 }

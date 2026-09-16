@@ -1,5 +1,47 @@
-// Contratos de /api/sync. El dashboard (coyotes-website/shared/schemas.ts) copia estos tipos para su proxy y su UI.
+// Contratos de /api/sync y /api/courtrack/*. El dashboard (coyotes-website/shared/schemas.ts) copia estos tipos.
 
+// ─── Catálogo de CourtTrack ──────────────────────────────────────────────────
+export type CourtrackCliente = {
+  id: number
+  nombre: string
+  titulo: string | null
+  logo: string | null
+  deporte: string | null
+}
+
+export type CourtrackLiga = {
+  id: number
+  nombre: string
+  descripcion: string | null
+  logo: string | null
+  etapas: { id: number; titulo: string }[]
+}
+
+export type CourtrackEquipo = {
+  /** Nombre tal como lo escribe CourtTrack (mayúsculas): es el que se guarda en courtrack_leagues.team_name. */
+  name: string
+  display_name: string
+  logo: string | null
+  matches: number
+}
+
+// ─── Ligas configuradas por la organización ──────────────────────────────────
+export type SyncLeague = {
+  id: string
+  competition: { id: string; name: string; kind: string }
+  id_cliente: number
+  cliente_name: string | null
+  liga_id: number
+  liga_name: string
+  team_name: string
+  team_logo_url: string | null
+  is_active: boolean
+  last_synced_at: string | null
+  /** Último sync real de esta liga, si lo hubo. */
+  last_sync: SyncLogEntry | null
+}
+
+// ─── Sincronización ──────────────────────────────────────────────────────────
 export type SyncQuota = {
   /** Syncs reales permitidos en 24 h (SYNC_DAILY_LIMIT). */
   limit: number
@@ -27,8 +69,8 @@ export type SyncMatchReport = {
   reason?: string
   /** Slug del partido en el dashboard (previsto, si es dry run). */
   slug?: string
-  /** `renamed_from`: nombre que tenía en el dashboard antes de que CourtTrack lo pisara. */
-  opponent?: { name: string; created: boolean; renamed_from?: string }
+  /** `courtrack_name`: nombre crudo en CourtTrack, para vincularlo a un rival existente. */
+  opponent?: { name: string; courtrack_name: string; created: boolean; renamed_from?: string }
 }
 
 export type SyncSummary = {
@@ -44,13 +86,19 @@ export type SyncSummary = {
 
 export type SyncResult = SyncSummary & {
   dry_run: boolean
-  league: { id: number; name: string }
+  league: {
+    id: string
+    courtrack_id: number
+    name: string
+    competition: { id: string; name: string }
+  }
   matches: SyncMatchReport[]
   quota: SyncQuota
 }
 
 export type SyncLogEntry = {
   id: string
+  league_id: string | null
   status: 'running' | 'success' | 'error' | 'rejected'
   started_at: string
   finished_at: string | null
@@ -61,5 +109,6 @@ export type SyncLogEntry = {
 export type SyncStatus = {
   org_id: string
   quota: SyncQuota
+  leagues: SyncLeague[]
   last_syncs: SyncLogEntry[]
 }

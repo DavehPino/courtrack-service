@@ -31,6 +31,8 @@ type MatchRow = {
   cover_image_url: string | null
   activity_id: string | null
   courtrack_id: string | null
+  competition_id: string | null
+  courtrack_league_id: string | null
   created_at: string
   updated_at: string
 }
@@ -45,6 +47,41 @@ type SyncLogRow = {
   finished_at: string | null
   result: Json | null
   error: string | null
+  courtrack_league_id: string | null
+}
+
+type CompetitionRow = {
+  id: string
+  org_id: string
+  name: string
+  kind: string
+  created_at: string
+  updated_at: string
+}
+
+type CourtrackLeagueRow = {
+  id: string
+  org_id: string
+  competition_id: string
+  id_cliente: number
+  cliente_name: string | null
+  liga_id: number
+  liga_name: string
+  team_name: string
+  team_logo_url: string | null
+  is_active: boolean
+  last_synced_at: string | null
+  created_at: string
+  updated_at: string
+}
+
+type CourtrackTeamLinkRow = {
+  id: string
+  org_id: string
+  courtrack_name: string
+  normalized_name: string
+  team_id: string
+  created_at: string
 }
 
 type Optional<T, K extends keyof T> = Omit<T, K> & Partial<Pick<T, K>>
@@ -78,6 +115,8 @@ export type Database = {
           | 'cover_image_url'
           | 'activity_id'
           | 'courtrack_id'
+          | 'competition_id'
+          | 'courtrack_league_id'
           | 'created_at'
           | 'updated_at'
         >
@@ -88,9 +127,38 @@ export type Database = {
         Row: SyncLogRow
         Insert: Optional<
           SyncLogRow,
-          'id' | 'source' | 'status' | 'dry_run' | 'started_at' | 'finished_at' | 'result' | 'error'
+          'id' | 'source' | 'status' | 'dry_run' | 'started_at' | 'finished_at' | 'result' | 'error' | 'courtrack_league_id'
         >
         Update: Partial<SyncLogRow>
+        Relationships: []
+      }
+      competitions: {
+        Row: CompetitionRow
+        Insert: Optional<CompetitionRow, 'id' | 'kind' | 'created_at' | 'updated_at'>
+        Update: Partial<CompetitionRow>
+        Relationships: []
+      }
+      courtrack_leagues: {
+        Row: CourtrackLeagueRow
+        Insert: Optional<
+          CourtrackLeagueRow,
+          'id' | 'cliente_name' | 'team_logo_url' | 'is_active' | 'last_synced_at' | 'created_at' | 'updated_at'
+        >
+        Update: Partial<CourtrackLeagueRow>
+        Relationships: [
+          {
+            foreignKeyName: 'courtrack_leagues_competition_id_fkey'
+            columns: ['competition_id']
+            isOneToOne: false
+            referencedRelation: 'competitions'
+            referencedColumns: ['id']
+          },
+        ]
+      }
+      courtrack_team_links: {
+        Row: CourtrackTeamLinkRow
+        Insert: Optional<CourtrackTeamLinkRow, 'id' | 'created_at'>
+        Update: Partial<CourtrackTeamLinkRow>
         Relationships: []
       }
     }

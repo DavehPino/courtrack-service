@@ -1,4 +1,4 @@
-// Registro de sincronizaciones (tabla sync_log): auditoría y límite de syncs por ventana de 24 h.
+// Registro de sincronizaciones (tabla sync_log): auditoría y límite de syncs por organización en 24 h.
 // Contar en Supabase en vez de en memoria: las funciones no comparten estado y el historial queda visible.
 import type { Json } from './database.types.js'
 import { db } from './supabase.js'
@@ -10,10 +10,10 @@ const WINDOW_MS = 24 * 60 * 60 * 1000
 const COUNTED = ['running', 'success', 'error']
 
 /** Registra el intento antes de empezar: así dos clics simultáneos se ven el uno al otro al contar. */
-export async function beginSync(orgId: string): Promise<string> {
+export async function beginSync(orgId: string, leagueId: string): Promise<string> {
   const { data, error } = await db()
     .from('sync_log')
-    .insert({ org_id: orgId, source: SOURCE, status: 'running', dry_run: false })
+    .insert({ org_id: orgId, source: SOURCE, status: 'running', dry_run: false, courtrack_league_id: leagueId })
     .select('id')
     .single()
   if (error) throw error
@@ -33,7 +33,7 @@ export async function finishSync(
   if (error) throw error
 }
 
-/** Cupo de la organización en las últimas 24 h. */
+/** Cupo de la organización en las últimas 24 h (todas sus ligas). */
 export async function getQuota(orgId: string, limit: number): Promise<SyncQuota> {
   const since = new Date(Date.now() - WINDOW_MS).toISOString()
   const { data, error } = await db()
@@ -58,6 +58,7 @@ export async function getQuota(orgId: string, limit: number): Promise<SyncQuota>
 
 function toEntry(row: {
   id: string
+  courtrack_league_id: string | null
   status: string
   started_at: string
   finished_at: string | null
@@ -67,14 +68,22 @@ function toEntry(row: {
   const status = (['running', 'success', 'error', 'rejected'] as const).find((value) => value === row.status) ?? 'error'
   const summary =
     row.result && typeof row.result === 'object' && !Array.isArray(row.result) ? (row.result as unknown as SyncSummary) : null
-  return { id: row.id, status, started_at: row.started_at, finished_at: row.finished_at, summary, error: row.error }
+  return {
+    id: row.id,
+    league_id: row.courtrack_league_id,
+    status,
+    started_at: row.started_at,
+    finished_at: row.finished_at,
+    summary,
+    error: row.error,
+  }
 }
 
-/** Últimas sincronizaciones reales, de la más reciente a la más antigua. */
+/** Últimas sincronizaciones reales de la organización, de la más reciente a la más antigua. */
 export async function lastSyncs(orgId: string, limit: number): Promise<SyncLogEntry[]> {
   const { data, error } = await db()
     .from('sync_log')
-    .select('id,status,started_at,finished_at,result,error')
+    .select('id,courtrack_league_id,status,started_at,finished_at,result,error')
     .eq('org_id', orgId)
     .eq('source', SOURCE)
     .eq('dry_run', false)

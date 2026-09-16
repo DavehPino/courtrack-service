@@ -1,8 +1,11 @@
-// Cliente de la API de CourtTrack (app móvil de PODIO). API privada y sin documentar: todo lo frágil vive aquí.
-// Contrato verificado en vivo: GET sin auth contra /api/torneo/*; `findPartidos` exige id_torneos e id_etapas.
+// Cliente de la API de CourtTrack (app móvil de PODIO y otras asociaciones). API privada y sin documentar:
+// todo lo frágil vive aquí. Contrato verificado en vivo: GET sin auth contra /api/torneo/*;
+// `findPartidos` exige id_torneos e id_etapas; `getEquipos` no responde (los equipos se derivan de los partidos).
 import { z } from 'zod'
 import { env } from './env.js'
 import { HttpError } from './http.js'
+import { titleCase } from './text.js'
+import type { CourtrackCliente, CourtrackEquipo, CourtrackLiga } from './types.js'
 
 const REQUEST_TIMEOUT_MS = 8_000
 /** Un reintento ante fallo de red, timeout o 5xx. */
@@ -42,19 +45,34 @@ export type Partido = z.infer<typeof partidoSchema>
 
 const findPartidosResponse = z.object({ data: z.array(partidoSchema) })
 
-const ligaSchema = z.object({
-  id: z.number().int(),
-  nombre: z.string(),
-  id_torneos: z.array(z.union([z.string(), z.number()])).min(1),
-  /** "3730,3731": etapas separadas por coma. */
-  id_etapas: z.union([z.string(), z.number()]),
-})
+const text = z.string().nullish()
+
+/** Asociación (getClientes). Laxo: una entrada rara no rompe el catálogo. */
+const clienteSchema = z
+  .object({ id: z.number().int(), nombre: text, titulo: text, descripcion: text, logo: text, deporte: text })
+  .loose()
+
+/** Liga dentro de una asociación (getLigas). Solo lo que hace falta para elegirla y sincronizarla. */
+const ligaSchema = z
+  .object({
+    id: z.number().int(),
+    nombre: z.string(),
+    descripcion: text,
+    logo: text,
+    id_torneos: z.array(z.union([z.string(), z.number()])).min(1),
+    /** "3730,3731": etapas separadas por coma. */
+    id_etapas: z.union([z.string(), z.number()]),
+    etapas: z
+      .array(z.object({ id: z.number().int(), titulo: text, division: text, descripcion: text }).loose())
+      .nullish(),
+  })
+  .loose()
 export type Liga = z.infer<typeof ligaSchema>
 
 const courtrackError = (message: string, details?: unknown) => new HttpError(502, 'courtrack_error', message, details)
 
 async function fetchJson(path: string, params: Record<string, string>): Promise<unknown> {
-  const url = new URL(`${env.courtrack.baseUrl}${path}`)
+  const url = new URL(`${env.courtrackBaseUrl}${path}`)
   for (const [key, value] of Object.entries(params)) url.searchParams.set(key, value)
 
   let lastError: unknown
@@ -92,16 +110,54 @@ function parse<S extends z.ZodType>(schema: S, raw: unknown, what: string): z.in
   return result.data
 }
 
-/** Liga configurada (COURTRACK_LIGA_ID) dentro de la asociación (COURTRACK_ID_CLIENTE): trae sus torneos y etapas. */
-export async function getLiga(): Promise<Liga> {
-  const { idCliente, ligaId } = env.courtrack
+/** Elementos válidos de una lista; los que no cumplen el esquema se descartan (y se registran). */
+function parseEach<S extends z.ZodType>(schema: S, raw: unknown, what: string): z.infer<S>[] {
+  const items = parse(z.array(z.unknown()), raw, what)
+  return items.flatMap((item) => {
+    const result = schema.safeParse(item)
+    if (!result.success) console.warn(`CourtTrack (${what}): entrada descartada`, result.error.issues[0])
+    return result.success ? [result.data] : []
+  })
+}
+
+/** Asociaciones/ligas disponibles en CourtTrack (PODIO = 5, etc.). */
+export async function getClientes(): Promise<CourtrackCliente[]> {
+  const raw = await fetchJson('/api/torneo/getClientes', {})
+  return parseEach(clienteSchema, raw, 'getClientes').map((item) => ({
+    id: item.id,
+    nombre: item.nombre ?? String(item.id),
+    titulo: item.titulo ?? item.descripcion ?? null,
+    logo: item.logo ?? null,
+    deporte: item.deporte ?? null,
+  }))
+}
+
+async function fetchLigas(idCliente: number): Promise<Liga[]> {
   const raw = await fetchJson('/api/torneo/getLigas', { id_cliente: String(idCliente) })
-  const ligas = parse(z.array(z.object({ id: z.number().int() }).loose()), raw, 'getLigas')
-  const liga = ligas.find((item) => item.id === ligaId)
+  return parseEach(ligaSchema, raw, 'getLigas')
+}
+
+/** Ligas de una asociación, para elegir cuál sincronizar. */
+export async function getLigas(idCliente: number): Promise<CourtrackLiga[]> {
+  return (await fetchLigas(idCliente)).map((liga) => ({
+    id: liga.id,
+    nombre: liga.nombre,
+    descripcion: liga.descripcion ?? null,
+    logo: liga.logo ?? null,
+    etapas: (liga.etapas ?? []).map((etapa) => ({
+      id: etapa.id,
+      titulo: [etapa.descripcion, etapa.division, etapa.titulo].filter(Boolean).join(' · ') || String(etapa.id),
+    })),
+  }))
+}
+
+/** Liga concreta con sus torneos y etapas actuales (cambian a mitad de temporada: se resuelven en cada sync). */
+export async function getLiga(idCliente: number, ligaId: number): Promise<Liga> {
+  const liga = (await fetchLigas(idCliente)).find((item) => item.id === ligaId)
   if (!liga) {
-    throw new HttpError(502, 'courtrack_liga_not_found', `La liga ${ligaId} no existe en CourtTrack para el cliente ${idCliente}`)
+    throw new HttpError(502, 'courtrack_liga_not_found', `La liga ${ligaId} no existe en CourtTrack para la asociación ${idCliente}`)
   }
-  return parse(ligaSchema, liga, `liga ${ligaId}`)
+  return liga
 }
 
 /** Todos los partidos de la liga (todas sus etapas), jugados y por jugar, con parciales. */
@@ -111,6 +167,23 @@ export async function findPartidos(liga: Liga): Promise<Partido[]> {
     id_etapas: String(liga.id_etapas),
   })
   return parse(findPartidosResponse, raw, 'findPartidos').data
+}
+
+/** Equipos que participan en la liga, derivados de sus partidos (getEquipos no responde). */
+export function teamsFromPartidos(partidos: Partido[]): CourtrackEquipo[] {
+  const teams = new Map<string, CourtrackEquipo>()
+  for (const partido of partidos) {
+    for (const [name, logo] of [
+      [partido.id_equipo_a, partido.logo_a],
+      [partido.id_equipo_b, partido.logo_b],
+    ] as const) {
+      const current = teams.get(name) ?? { name, display_name: titleCase(name), logo: null, matches: 0 }
+      current.matches += 1
+      current.logo ??= logo?.trim() || null
+      teams.set(name, current)
+    }
+  }
+  return [...teams.values()].sort((a, b) => a.name.localeCompare(b.name, 'es'))
 }
 
 export type Side = 'a' | 'b'

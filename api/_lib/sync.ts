@@ -1,23 +1,27 @@
-// Orquestador: cupo → CourtTrack → filtrar partidos propios jugados → rivales → alta/edición en `matches` → registro.
+// Orquestador: liga → cupo → CourtTrack → filtrar partidos propios jugados → rivales → alta/edición en `matches` → registro.
 import { findPartidos, getLiga, partidoSets, type Partido, type Side } from './courtrack.js'
 import { env } from './env.js'
 import { HttpError } from './http.js'
+import { getLeague, listLeagues, resolveDefaultLeague, touchLeague, type League } from './leagues.js'
 import { findByCourtrackIds, findManualMatch, insertMatch, isUnchanged, updateMatch, type MatchRow, type MatchValues } from './matches.js'
 import { beginSync, finishSync, getQuota, lastSyncs } from './syncLog.js'
 import { RivalResolver } from './teams.js'
 import { addDays, horarioToTime, matchSlugBase, sameName, tallySets, titleCase, todayIsoDate } from './text.js'
-import type { SyncMatchReport, SyncResult, SyncStatus, SyncSummary } from './types.js'
+import type { SyncLogEntry, SyncMatchReport, SyncResult, SyncStatus, SyncSummary } from './types.js'
 
 export type SyncOptions = {
-  /** Calcula y devuelve qué haría sin escribir nada (ni partidos, ni rivales, ni sync_log). */
+  orgId: string
+  /** Liga (courtrack_leagues.id). Si falta, la única activa de la organización. */
+  leagueId?: string
+  /** Calcula y devuelve qué haría sin escribir nada (ni partidos, ni rivales, ni vínculos, ni sync_log). */
   dryRun: boolean
   /** Solo CLI: ignora el límite diario (el intento se registra igual). */
   skipQuota?: boolean
 }
 
-const LAST_SYNCS = 5
+const LAST_SYNCS = 20
 
-type Context = { resolver: RivalResolver; existing: Map<string, MatchRow>; dryRun: boolean; today: string }
+type Context = { league: League; resolver: RivalResolver; existing: Map<string, MatchRow>; dryRun: boolean; today: string }
 
 const cleanText = (value: string | null | undefined) => value?.trim() || null
 
@@ -57,18 +61,21 @@ async function importPartido(partido: Partido, ours: Side, ctx: Context): Promis
   const rival = await ctx.resolver.resolve(rivalName, rivalLogo)
   report.opponent = {
     name: rival.team.name,
+    courtrack_name: rival.courtrack_name,
     created: rival.created,
     ...(rival.renamed_from ? { renamed_from: rival.renamed_from } : {}),
   }
 
   const values: MatchValues = {
     courtrack_id: report.courtrack_id,
+    courtrack_league_id: ctx.league.id,
+    competition_id: ctx.league.competition.id,
+    competition: ctx.league.competition.name,
     played_on: report.played_on,
     start_time: report.start_time,
     opponent_team_id: rival.team.id,
     is_home: ours === 'a',
     location: partido.id_cancha ? titleCase(partido.id_cancha) : null,
-    competition: env.courtrack.competition,
     phase: cleanText(partido.etapa_formatted),
     sets_won: setsWon,
     sets_lost: setsLost,
@@ -78,7 +85,7 @@ async function importPartido(partido: Partido, ours: Side, ctx: Context): Promis
   // Un rival recién creado no puede tener partidos manuales.
   const existing =
     ctx.existing.get(report.courtrack_id) ??
-    (rival.created ? null : await findManualMatch(values.played_on, values.opponent_team_id))
+    (rival.created ? null : await findManualMatch(values.played_on, values.opponent_team_id, values.competition_id))
 
   if (existing) {
     report.slug = existing.slug
@@ -109,35 +116,38 @@ function summarize(scanned: number, matches: SyncMatchReport[], rivalsCreated: s
 /** El instante en que se libera cupo viaja en `details.quota.resets_at`; quien llama lo formatea en hora local. */
 const quotaMessage = (limit: number) => `Ya se hicieron ${limit} sincronizaciones en las últimas 24 horas.`
 
-export async function runSync({ dryRun, skipQuota = false }: SyncOptions): Promise<SyncResult> {
-  const { orgId, dailyLimit } = env.sync
-  const { team, aliases } = env.courtrack
+export async function runSync({ orgId, leagueId, dryRun, skipQuota = false }: SyncOptions): Promise<SyncResult> {
+  const limit = env.dailyLimit
+  const league = leagueId ? await getLeague(orgId, leagueId) : await resolveDefaultLeague(orgId)
+  if (!league.is_active) throw new HttpError(409, 'league_inactive', `La liga "${league.liga_name}" está pausada`)
 
   let logId: string | null = null
   if (!dryRun) {
-    logId = await beginSync(orgId)
+    logId = await beginSync(orgId, league.id)
     if (!skipQuota) {
       // La cuenta incluye este intento (ya está en `running`): con el cupo agotado supera el límite.
-      const quota = await getQuota(orgId, dailyLimit)
-      if (quota.used > dailyLimit) {
+      const quota = await getQuota(orgId, limit)
+      if (quota.used > limit) {
         await finishSync(logId, 'rejected', null, 'Cupo diario agotado')
-        const current = await getQuota(orgId, dailyLimit)
-        throw new HttpError(429, 'quota_exceeded', quotaMessage(dailyLimit), { quota: current })
+        const current = await getQuota(orgId, limit)
+        throw new HttpError(429, 'quota_exceeded', quotaMessage(limit), { quota: current })
       }
     }
   }
 
   try {
-    const liga = await getLiga()
+    // Torneos y etapas se resuelven en cada sync: CourtTrack añade etapas (playoffs) a mitad de temporada.
+    const liga = await getLiga(league.id_cliente, league.liga_id)
     const partidos = await findPartidos(liga)
 
     const own = partidos
-      .map((partido) => ({ partido, side: ownSide(partido, team) }))
+      .map((partido) => ({ partido, side: ownSide(partido, league.team_name) }))
       .filter((item): item is { partido: Partido; side: Side } => item.side !== null)
       .sort((x, y) => x.partido.fecha.localeCompare(y.partido.fecha) || x.partido.id - y.partido.id)
 
     const ctx: Context = {
-      resolver: await RivalResolver.load({ aliases, dryRun }),
+      league,
+      resolver: await RivalResolver.load({ orgId, dryRun }),
       existing: await findByCourtrackIds(own.map(({ partido }) => String(partido.id))),
       dryRun,
       today: todayIsoDate(),
@@ -147,14 +157,22 @@ export async function runSync({ dryRun, skipQuota = false }: SyncOptions): Promi
     for (const { partido, side } of own) matches.push(await importPartido(partido, side, ctx))
 
     const summary = summarize(partidos.length, matches, ctx.resolver.created)
-    if (logId) await finishSync(logId, 'success', summary)
+    if (logId) {
+      await finishSync(logId, 'success', summary)
+      await touchLeague(league.id)
+    }
 
     return {
       ...summary,
       dry_run: dryRun,
-      league: { id: liga.id, name: liga.nombre },
+      league: {
+        id: league.id,
+        courtrack_id: league.liga_id,
+        name: league.liga_name,
+        competition: { id: league.competition.id, name: league.competition.name },
+      },
       matches,
-      quota: await getQuota(orgId, dailyLimit),
+      quota: await getQuota(orgId, limit),
     }
   } catch (err) {
     if (logId) {
@@ -165,9 +183,21 @@ export async function runSync({ dryRun, skipQuota = false }: SyncOptions): Promi
   }
 }
 
-/** Cupo restante y últimas sincronizaciones, para mostrarlos antes de pulsar "Sincronizar". */
-export async function getSyncStatus(): Promise<SyncStatus> {
-  const { orgId, dailyLimit } = env.sync
-  const [quota, last] = await Promise.all([getQuota(orgId, dailyLimit), lastSyncs(orgId, LAST_SYNCS)])
-  return { org_id: orgId, quota, last_syncs: last }
+/** Cupo restante, ligas configuradas (con su último sync) y últimas ejecuciones de la organización. */
+export async function getSyncStatus(orgId: string): Promise<SyncStatus> {
+  const [quota, leagues, last] = await Promise.all([
+    getQuota(orgId, env.dailyLimit),
+    listLeagues(orgId),
+    lastSyncs(orgId, LAST_SYNCS),
+  ])
+  const lastByLeague = new Map<string, SyncLogEntry>()
+  for (const entry of last) {
+    if (entry.league_id && !lastByLeague.has(entry.league_id)) lastByLeague.set(entry.league_id, entry)
+  }
+  return {
+    org_id: orgId,
+    quota,
+    leagues: leagues.map(({ org_id: _org, ...league }) => ({ ...league, last_sync: lastByLeague.get(league.id) ?? null })),
+    last_syncs: last,
+  }
 }

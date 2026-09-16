@@ -16,6 +16,7 @@ export class HttpError extends Error {
 export const badRequest = (message: string, details?: unknown) =>
   new HttpError(400, 'bad_request', message, details)
 export const unauthorized = (message = 'No autorizado') => new HttpError(401, 'unauthorized', message)
+export const notFound = (message = 'No encontrado') => new HttpError(404, 'not_found', message)
 
 export type ApiErrorBody = { error: { code: string; message: string; details?: unknown } }
 
@@ -63,4 +64,25 @@ export async function parseBody<S extends z.ZodType>(request: Request, schema: S
   const result = schema.safeParse(raw)
   if (!result.success) throw badRequest('Datos inválidos', result.error.issues)
   return result.data
+}
+
+export function parseQuery<S extends z.ZodType>(request: Request, schema: S): z.infer<S> {
+  const params = Object.fromEntries(new URL(request.url).searchParams)
+  const result = schema.safeParse(params)
+  if (!result.success) throw badRequest('Parámetros inválidos', result.error.issues)
+  return result.data
+}
+
+/** Último segmento de la ruta, p.ej. /api/courtrack/<resource> → <resource>. */
+export function pathParam(request: Request): string {
+  const segments = new URL(request.url).pathname.split('/').filter(Boolean)
+  const value = segments[segments.length - 1]
+  if (!value) throw badRequest('Falta un parámetro en la ruta')
+  return decodeURIComponent(value)
+}
+
+/** Handler de un segmento dentro de una función que agrupa varias rutas. 404 si no está en la tabla. */
+export function routeFor<T>(routes: Record<string, T>, key: string): T {
+  if (!Object.hasOwn(routes, key)) throw notFound()
+  return routes[key]
 }
