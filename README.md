@@ -119,6 +119,7 @@ Todas las rutas salvo `/api/health` exigen `Authorization: Bearer <SYNC_SECRET>`
 | GET | `/api/courtrack/ligas?id_cliente=5` | Ligas de una asociación `{ id, nombre, descripcion, logo, etapas }[]` |
 | GET | `/api/courtrack/equipos?id_cliente=5&liga_id=605` | Equipos de la liga `{ name, display_name, logo, matches }[]` (derivados de los partidos; `getEquipos` no responde) |
 | GET | `/api/courtrack/descubrir?id_cliente=5&team=COYOTES` | Ligas de la asociación donde juega el equipo `{ liga, team, total_matches, played_matches }[]` (recorre sus partidos, ~2 s para PODIO) |
+| GET | `/api/courtrack/partido?id=61320` | `CourtrackPartido`: progresión punto a punto, estadísticas por set y por jugador y formaciones iniciales de un partido jugado (`id` = `matches.courtrack_id`). Los lados son `a`/`b` como en CourtTrack; quien llama decide cuál es el propio. Un id inexistente cierra la conexión: 502 `courtrack_error` |
 
 ```jsonc
 // POST /api/sync → 200
@@ -179,6 +180,17 @@ sincronizar cualquier organización: con el multitenant el token pasará a ser p
 - `GET /api/torneo/findPartidos?id_torneos=934&id_etapas=3730,3731` → `{ data: [...] }`. **Los dos parámetros son
   obligatorios** (400 "Debe especificar id_etapas" si falta uno).
 - `GET /api/torneo/getEquipos` no responde: los equipos de una liga se derivan de `findPartidos`.
+- `GET /api/torneo/getDetallePartido?id=<id>` → un partido con `sets[]` (marcador, duración en minutos, tiempos,
+  cambios y `formacionA/B` con `posicion` 1–6 y 0 para líberos, `saque` marca quién saca primero), `estadisticas`
+  (`set1…setN` y `total`, con `ataques/aces/bloqueos/erroresSaque/erroresNoForzados/total` por lado A/B; ojo:
+  `erroresSaqueA` y `erroresNoForzadosA` son puntos que **recibió** A por errores de B, de modo que `totalA` es la
+  suma de los cinco; el servicio los devuelve como errores cometidos por cada equipo),
+  `progresion` (`set1…setN`: cada entrada trae el marcador **antes** de la acción y `eventoA` o `eventoB` según el
+  equipo que la protagoniza, con `tipo` puntoAtaque|puntoSaque|puntoBloqueo|errorSaque|error|tiempo|cambio y
+  `descripcion` "12-GRASSI"; la última entrada es el marcador final), `estadisticasJugador` (los dos equipos, con
+  `tipo` "jugador,capitan"/"jugador,libero", `puntosDisputados` y el `AIScore` propio de CourtTrack), MVP, duración
+  y horas reales. Los totales por jugador coinciden con los que se derivan de la progresión. Un id inexistente
+  **cierra la conexión** sin respuesta.
 - Cada partido: `id`, `fecha` (ISO a medianoche UTC), `horario` (1600), `id_equipo_a` / `id_equipo_b` (nombres en
   mayúsculas), `status` (`played` | `upcoming`), `sets_a` / `sets_b`, `set1_a…set5_b` (0 en los no jugados),
   `id_cancha`, `etapa_formatted`, `torneo`, `logo_a` / `logo_b`.
@@ -192,7 +204,7 @@ Es una API privada sin documentar: puede cambiar sin aviso. Todo lo que depende 
 api/
   health.ts               GET /api/health
   sync.ts                 GET|POST /api/sync
-  courtrack/[resource].ts GET /api/courtrack/clientes|ligas|equipos
+  courtrack/[resource].ts GET /api/courtrack/clientes|ligas|equipos|descubrir|partido
   _lib/                   (no cuenta como función en Vercel)
     env.ts                variables de entorno
     http.ts               errores, respuestas JSON, parseo de query/body, rutas agrupadas

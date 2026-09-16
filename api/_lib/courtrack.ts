@@ -1,11 +1,24 @@
 // Cliente de la API de CourtTrack (app móvil de PODIO y otras asociaciones). API privada y sin documentar:
 // todo lo frágil vive aquí. Contrato verificado en vivo: GET sin auth contra /api/torneo/*;
-// `findPartidos` exige id_torneos e id_etapas; `getEquipos` no responde (los equipos se derivan de los partidos).
+// `findPartidos` exige id_torneos e id_etapas; `getEquipos` no responde (los equipos se derivan de los partidos);
+// `getDetallePartido?id=` trae progresión punto a punto, estadísticas y formaciones de un partido jugado.
 import { z } from 'zod'
 import { env } from './env.js'
 import { HttpError } from './http.js'
 import { sameName, titleCase } from './text.js'
-import type { CourtrackCliente, CourtrackDiscoveredLiga, CourtrackEquipo, CourtrackLiga } from './types.js'
+import type {
+  CourtrackCliente,
+  CourtrackDiscoveredLiga,
+  CourtrackEquipo,
+  CourtrackLiga,
+  CourtrackPartido,
+  CourtrackPlayerStats,
+  CourtrackSet,
+  CourtrackSetEvent,
+  CourtrackSetEventKind,
+  CourtrackSetLineupPlayer,
+  CourtrackStatLine,
+} from './types.js'
 
 const REQUEST_TIMEOUT_MS = 8_000
 /** Un reintento ante fallo de red, timeout o 5xx. */
@@ -248,4 +261,276 @@ export function partidoSets(partido: Partido, ours: Side): { us: number; them: n
     sets.push(ours === 'a' ? { us: a, them: b } : { us: b, them: a })
   }
   return sets
+}
+
+// ─── Detalle de un partido ───────────────────────────────────────────────────
+
+/** Enteros que a veces llegan como texto ("10190"). */
+const intish = z.union([z.number(), z.string().regex(/^-?\d+$/)]).transform(Number)
+const optionalInt = intish
+  .nullish()
+  .transform((value) => (value === null || value === undefined || !Number.isInteger(value) ? null : value))
+
+const statLineSchema = z
+  .object({
+    ataquesA: optionalInt,
+    ataquesB: optionalInt,
+    acesA: optionalInt,
+    acesB: optionalInt,
+    bloqueosA: optionalInt,
+    bloqueosB: optionalInt,
+    erroresSaqueA: optionalInt,
+    erroresSaqueB: optionalInt,
+    erroresNoForzadosA: optionalInt,
+    erroresNoForzadosB: optionalInt,
+    totalA: optionalInt,
+    totalB: optionalInt,
+  })
+  .loose()
+
+const progresionEventSchema = z.object({ tipo: text, titulo: text, descripcion: text }).loose()
+
+const progresionEntrySchema = z
+  .object({
+    tanteadorA: optionalInt,
+    tanteadorB: optionalInt,
+    eventoA: progresionEventSchema.nullish(),
+    eventoB: progresionEventSchema.nullish(),
+  })
+  .loose()
+
+const formacionPlayerSchema = z
+  .object({
+    posicion: optionalInt,
+    saque: z.boolean().nullish(),
+    nombre: text,
+    apellidosAbr: text,
+    numero: optionalInt,
+  })
+  .loose()
+
+const setSchema = z
+  .object({
+    set: intish,
+    tanteadorA: optionalInt,
+    tanteadorB: optionalInt,
+    duracion: optionalInt,
+    tiemposA: optionalInt,
+    tiemposB: optionalInt,
+    cambiosA: optionalInt,
+    cambiosB: optionalInt,
+    formacionA: z.array(z.unknown()).nullish(),
+    formacionB: z.array(z.unknown()).nullish(),
+  })
+  .loose()
+
+const jugadorSchema = z
+  .object({
+    id: intish,
+    nombre: text,
+    apellidosAbr: text,
+    numero: optionalInt,
+    /** "jugador", "jugador,capitan", "jugador,libero". */
+    tipo: text,
+    equipo: z.string(),
+    puntosDisputados: optionalInt,
+    ataques: optionalInt,
+    aces: optionalInt,
+    bloqueos: optionalInt,
+    erroresSaque: optionalInt,
+    erroresNoForzados: optionalInt,
+    AIScore: z.object({ total: z.number().nullish() }).loose().nullish(),
+  })
+  .loose()
+
+const detallePartidoSchema = z
+  .object({
+    id: intish,
+    id_equipo_a: z.string(),
+    id_equipo_b: z.string(),
+    sets_a: optionalInt,
+    sets_b: optionalInt,
+    status: text,
+    /** "1h 55m". */
+    duracion: text,
+    hora_inicio_formatted: text,
+    hora_fin_formatted: text,
+    mvp_nombre: text,
+    mvp_equipo: text,
+    mvp: z.object({ numero: optionalInt }).loose().nullish(),
+    sets: z.array(z.unknown()).nullish(),
+    /** { set1: {...}, set2: {...}, total: {...} }. */
+    estadisticas: z.record(z.string(), z.unknown()).nullish(),
+    /** { set1: [...], set2: [...] }. */
+    progresion: z.record(z.string(), z.unknown()).nullish(),
+    estadisticasJugador: z.array(z.unknown()).nullish(),
+  })
+  .loose()
+
+const EVENT_KINDS: Record<string, CourtrackSetEventKind> = {
+  puntoAtaque: 'attack',
+  puntoSaque: 'ace',
+  puntoBloqueo: 'block',
+  errorSaque: 'serve_error',
+  error: 'unforced_error',
+  tiempo: 'timeout',
+  cambio: 'substitution',
+}
+
+/** "16:06hs" → "16:06". */
+function formattedTime(value: string | null | undefined): string | null {
+  const match = value?.match(/^(\d{1,2}):(\d{2})/)
+  return match ? `${match[1]!.padStart(2, '0')}:${match[2]}` : null
+}
+
+/** "12-GRASSI" → { number: 12, name: "Grassi" }; sin dorsal, solo el nombre. */
+function eventPlayer(description: string | null): CourtrackSetEvent['player'] {
+  if (!description) return null
+  const match = description.match(/^(\d+)\s*-\s*(.+)$/)
+  return match ? { number: Number(match[1]), name: titleCase(match[2]!) } : { number: null, name: titleCase(description) }
+}
+
+/**
+ * CourtTrack guarda `erroresSaqueA` y `erroresNoForzadosA` como puntos que RECIBIÓ A por errores de B (así
+ * `totalA` = ataquesA + acesA + bloqueosA + erroresSaqueA + erroresNoForzadosA). Aquí se devuelven como errores
+ * cometidos por cada equipo, igual que en las estadísticas por jugador: los de A son los `...B` crudos.
+ */
+function toStatLine(raw: unknown, side: 'A' | 'B'): CourtrackStatLine | null {
+  const result = statLineSchema.safeParse(raw)
+  if (!result.success) return null
+  const line = result.data
+  const other = side === 'A' ? 'B' : 'A'
+  return {
+    attacks: line[`ataques${side}`] ?? 0,
+    aces: line[`aces${side}`] ?? 0,
+    blocks: line[`bloqueos${side}`] ?? 0,
+    serve_errors: line[`erroresSaque${other}`] ?? 0,
+    unforced_errors: line[`erroresNoForzados${other}`] ?? 0,
+    points: line[`total${side}`] ?? 0,
+  }
+}
+
+function toLineup(raw: unknown[] | null | undefined, what: string): CourtrackSetLineupPlayer[] {
+  return parseEach(formacionPlayerSchema, raw ?? [], what)
+    .map((player) => ({
+      position: player.posicion ?? 0,
+      number: player.numero,
+      name: player.nombre?.trim() || player.apellidosAbr?.trim() || '',
+      short_name: player.apellidosAbr?.trim() || player.nombre?.trim() || '',
+      serving: player.saque === true,
+    }))
+    .sort((a, b) => a.position - b.position)
+}
+
+/**
+ * Progresión de un set. Cada entrada de CourtTrack trae el marcador ANTES de la acción y la acción (`eventoA` o
+ * `eventoB`, según el equipo que la protagoniza); el marcador resultante es el de la entrada siguiente. La última
+ * entrada es el marcador final, sin evento.
+ */
+function toEvents(raw: unknown, what: string): CourtrackSetEvent[] {
+  if (!Array.isArray(raw)) return []
+  const entries = parseEach(progresionEntrySchema, raw, what)
+  const events: CourtrackSetEvent[] = []
+  for (let index = 0; index < entries.length - 1; index += 1) {
+    const entry = entries[index]!
+    const next = entries[index + 1]!
+    const score_a = next.tanteadorA ?? entry.tanteadorA ?? 0
+    const score_b = next.tanteadorB ?? entry.tanteadorB ?? 0
+    let recorded = false
+    for (const [side, evento] of [
+      ['a', entry.eventoA],
+      ['b', entry.eventoB],
+    ] as const) {
+      if (!evento) continue
+      recorded = true
+      const kind = EVENT_KINDS[evento.tipo ?? ''] ?? 'other'
+      const description = evento.descripcion?.trim() || null
+      events.push({
+        score_a,
+        score_b,
+        side,
+        kind,
+        player: kind === 'substitution' || kind === 'timeout' ? null : eventPlayer(description),
+        detail: kind === 'substitution' && description ? titleCase(description).replace(/\s*\|\s*/g, ' · ') : null,
+      })
+    }
+    if (recorded) continue
+    // Punto sin acción registrada: se atribuye a quien sumó.
+    const gainedA = score_a > (entry.tanteadorA ?? 0)
+    const gainedB = score_b > (entry.tanteadorB ?? 0)
+    if (gainedA !== gainedB) {
+      events.push({ score_a, score_b, side: gainedA ? 'a' : 'b', kind: 'other', player: null, detail: null })
+    }
+  }
+  return events
+}
+
+function toPlayerStats(raw: unknown[] | null | undefined): CourtrackPlayerStats[] {
+  return parseEach(jugadorSchema, raw ?? [], 'getDetallePartido.estadisticasJugador').map((player) => {
+    const roles = (player.tipo ?? '').split(',').map((role) => role.trim().toLowerCase())
+    return {
+      id: player.id,
+      name: player.nombre?.trim() || player.apellidosAbr?.trim() || String(player.id),
+      short_name: player.apellidosAbr?.trim() || player.nombre?.trim() || String(player.id),
+      number: player.numero,
+      team: player.equipo,
+      captain: roles.includes('capitan'),
+      libero: roles.includes('libero'),
+      rallies: player.puntosDisputados ?? 0,
+      attacks: player.ataques ?? 0,
+      aces: player.aces ?? 0,
+      blocks: player.bloqueos ?? 0,
+      serve_errors: player.erroresSaque ?? 0,
+      unforced_errors: player.erroresNoForzados ?? 0,
+      rating: typeof player.AIScore?.total === 'number' ? player.AIScore.total : null,
+    }
+  })
+}
+
+/** Progresión, estadísticas por set y por jugador y formaciones de un partido (`getDetallePartido?id=`). */
+export async function getDetallePartido(id: number): Promise<CourtrackPartido> {
+  const raw = await fetchJson('/api/torneo/getDetallePartido', { id: String(id) })
+  // Un id desconocido responde con el cuerpo vacío.
+  if (raw === null || raw === undefined || raw === '') {
+    throw new HttpError(404, 'courtrack_partido_not_found', `El partido ${id} no existe en CourtTrack`)
+  }
+  const detalle = parse(detallePartidoSchema, raw, 'getDetallePartido')
+
+  const stats = detalle.estadisticas ?? {}
+  const progresion = detalle.progresion ?? {}
+  const sets: CourtrackSet[] = parseEach(setSchema, detalle.sets ?? [], 'getDetallePartido.sets')
+    .sort((a, b) => a.set - b.set)
+    .map((set) => ({
+      number: set.set,
+      score_a: set.tanteadorA ?? 0,
+      score_b: set.tanteadorB ?? 0,
+      duration_minutes: set.duracion,
+      timeouts_a: set.tiemposA ?? 0,
+      timeouts_b: set.tiemposB ?? 0,
+      substitutions_a: set.cambiosA ?? 0,
+      substitutions_b: set.cambiosB ?? 0,
+      stats_a: toStatLine(stats[`set${set.set}`], 'A'),
+      stats_b: toStatLine(stats[`set${set.set}`], 'B'),
+      lineup_a: toLineup(set.formacionA, `getDetallePartido.sets[${set.set}].formacionA`),
+      lineup_b: toLineup(set.formacionB, `getDetallePartido.sets[${set.set}].formacionB`),
+      events: toEvents(progresion[`set${set.set}`], `getDetallePartido.progresion.set${set.set}`),
+    }))
+
+  const mvpName = detalle.mvp_nombre?.trim()
+  return {
+    id: detalle.id,
+    team_a: detalle.id_equipo_a,
+    team_b: detalle.id_equipo_b,
+    sets_a: detalle.sets_a,
+    sets_b: detalle.sets_b,
+    status: detalle.status ?? 'played',
+    duration: detalle.duracion?.trim() || null,
+    started_at: formattedTime(detalle.hora_inicio_formatted),
+    ended_at: formattedTime(detalle.hora_fin_formatted),
+    mvp: mvpName ? { name: mvpName, number: detalle.mvp?.numero ?? null, team: detalle.mvp_equipo?.trim() || '' } : null,
+    sets,
+    totals_a: toStatLine(stats.total, 'A'),
+    totals_b: toStatLine(stats.total, 'B'),
+    players: toPlayerStats(detalle.estadisticasJugador),
+  }
 }

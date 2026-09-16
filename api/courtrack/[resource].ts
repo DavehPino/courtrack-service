@@ -3,10 +3,19 @@
 //   GET /api/courtrack/ligas?id_cliente=5                        → CourtrackLiga[]
 //   GET /api/courtrack/equipos?id_cliente=5&liga_id=605          → CourtrackEquipo[] (derivados de los partidos)
 //   GET /api/courtrack/descubrir?id_cliente=5&team=COYOTES       → CourtrackDiscoveredLiga[] (ligas donde juega el equipo)
+//   GET /api/courtrack/partido?id=61320                          → CourtrackPartido (progresión, estadísticas y formaciones)
 // Todas exigen `Authorization: Bearer <SYNC_SECRET>`. Sin caché: las respuestas van con credenciales.
 import { z } from 'zod'
 import { requireSecret } from '../_lib/auth.js'
-import { discoverLeagues, findPartidos, getClientes, getLiga, getLigas, teamsFromPartidos } from '../_lib/courtrack.js'
+import {
+  discoverLeagues,
+  findPartidos,
+  getClientes,
+  getDetallePartido,
+  getLiga,
+  getLigas,
+  teamsFromPartidos,
+} from '../_lib/courtrack.js'
 import { handle, noStore, parseQuery, pathParam, routeFor, type Handler } from '../_lib/http.js'
 
 const id = z.coerce.number().int().positive()
@@ -28,6 +37,11 @@ const resources: Record<string, Handler> = {
   descubrir: async (request) => {
     const { id_cliente, team } = parseQuery(request, z.object({ id_cliente: id, team: z.string().trim().min(1).max(120) }))
     return noStore(await discoverLeagues(id_cliente, team))
+  },
+
+  partido: async (request) => {
+    const query = parseQuery(request, z.object({ id }))
+    return noStore(await getDetallePartido(query.id))
   },
 }
 

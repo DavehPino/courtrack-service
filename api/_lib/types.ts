@@ -148,3 +148,108 @@ export type SyncStatus = {
   leagues: SyncLeague[]
   last_syncs: SyncLogEntry[]
 }
+
+// ─── Detalle de un partido (getDetallePartido) ───────────────────────────────
+/**
+ * Acciones de un equipo en un set o en el partido. `serve_errors` y `unforced_errors` son los errores que COMETIÓ el
+ * equipo; `points` es su total anotado = attacks + aces + blocks + errores del rival.
+ */
+export type CourtrackStatLine = {
+  attacks: number
+  aces: number
+  blocks: number
+  serve_errors: number
+  unforced_errors: number
+  points: number
+}
+
+export type CourtrackSetEventKind =
+  | 'attack'
+  | 'ace'
+  | 'block'
+  | 'serve_error'
+  | 'unforced_error'
+  | 'timeout'
+  | 'substitution'
+  | 'other'
+
+/** Un paso de la progresión de un set: quién hizo qué y cómo quedó el marcador. */
+export type CourtrackSetEvent = {
+  /** Marcador después del evento. */
+  score_a: number
+  score_b: number
+  /** Equipo protagonista: el que anota o, en los errores, el que lo comete. */
+  side: 'a' | 'b'
+  kind: CourtrackSetEventKind
+  /** "12-GRASSI" en CourtTrack → `{ number: 12, name: 'Grassi' }`. */
+  player: { number: number | null; name: string } | null
+  /** Texto de una sustitución: "Entra #27 Carrion · Sale #17 Rios". */
+  detail: string | null
+}
+
+/** Jugador en la formación inicial de un set. `position` 1–6 es la zona de la rotación; 0, líbero. */
+export type CourtrackSetLineupPlayer = {
+  position: number
+  number: number | null
+  name: string
+  short_name: string
+  /** Saca primero en el set. */
+  serving: boolean
+}
+
+export type CourtrackSet = {
+  number: number
+  score_a: number
+  score_b: number
+  duration_minutes: number | null
+  timeouts_a: number
+  timeouts_b: number
+  substitutions_a: number
+  substitutions_b: number
+  stats_a: CourtrackStatLine | null
+  stats_b: CourtrackStatLine | null
+  lineup_a: CourtrackSetLineupPlayer[]
+  lineup_b: CourtrackSetLineupPlayer[]
+  events: CourtrackSetEvent[]
+}
+
+/** Estadísticas de un jugador en todo el partido (de los dos equipos). */
+export type CourtrackPlayerStats = {
+  id: number
+  name: string
+  short_name: string
+  number: number | null
+  /** Nombre del equipo tal como lo escribe CourtTrack (coincide con `team_a` o `team_b`). */
+  team: string
+  captain: boolean
+  libero: boolean
+  /** Puntos disputados en cancha. */
+  rallies: number
+  attacks: number
+  aces: number
+  blocks: number
+  serve_errors: number
+  unforced_errors: number
+  /** Puntaje "AIScore" que calcula CourtTrack (puede ser negativo). */
+  rating: number | null
+}
+
+/** Progresión, estadísticas y formaciones de un partido ya jugado. */
+export type CourtrackPartido = {
+  id: number
+  team_a: string
+  team_b: string
+  sets_a: number | null
+  sets_b: number | null
+  status: string
+  /** "1h 55m", tal como lo formatea CourtTrack. */
+  duration: string | null
+  /** Hora real de inicio y fin ("16:06"). */
+  started_at: string | null
+  ended_at: string | null
+  mvp: { name: string; number: number | null; team: string } | null
+  sets: CourtrackSet[]
+  totals_a: CourtrackStatLine | null
+  totals_b: CourtrackStatLine | null
+  players: CourtrackPlayerStats[]
+}
