@@ -58,7 +58,10 @@ export async function resolveDefaultLeague(orgId: string): Promise<League> {
   throw new HttpError(400, 'league_required', 'Hay varias ligas activas: indica league_id')
 }
 
-export async function touchLeague(id: string): Promise<void> {
-  const { error } = await db().from('courtrack_leagues').update({ last_synced_at: new Date().toISOString() }).eq('id', id)
+/** Anota el sync y, si CourtTrack publica el escudo propio, lo guarda para mostrarlo en el dashboard. */
+export async function touchLeague(id: string, teamLogoUrl: string | null): Promise<void> {
+  const changes: { last_synced_at: string; team_logo_url?: string } = { last_synced_at: new Date().toISOString() }
+  if (teamLogoUrl) changes.team_logo_url = teamLogoUrl
+  const { error } = await db().from('courtrack_leagues').update(changes).eq('id', id)
   if (error) console.error(error)
 }

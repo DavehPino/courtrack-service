@@ -1,5 +1,5 @@
 // Orquestador: liga → cupo → CourtTrack → filtrar partidos propios jugados → rivales → alta/edición en `matches` → registro.
-import { findPartidos, getLiga, partidoSets, type Partido, type Side } from './courtrack.js'
+import { findPartidos, getLiga, partidoSets, teamsFromPartidos, type Partido, type Side } from './courtrack.js'
 import { env } from './env.js'
 import { HttpError } from './http.js'
 import { getLeague, listLeagues, resolveDefaultLeague, touchLeague, type League } from './leagues.js'
@@ -70,7 +70,6 @@ async function importPartido(partido: Partido, ours: Side, ctx: Context): Promis
     courtrack_id: report.courtrack_id,
     courtrack_league_id: ctx.league.id,
     competition_id: ctx.league.competition.id,
-    competition: ctx.league.competition.name,
     played_on: report.played_on,
     start_time: report.start_time,
     opponent_team_id: rival.team.id,
@@ -159,7 +158,9 @@ export async function runSync({ orgId, leagueId, dryRun, skipQuota = false }: Sy
     const summary = summarize(partidos.length, matches, ctx.resolver.created)
     if (logId) {
       await finishSync(logId, 'success', summary)
-      await touchLeague(league.id)
+      // El escudo propio tal como lo publica CourtTrack en esta liga (lo muestra el gestor de ligas del dashboard).
+      const ownLogo = teamsFromPartidos(partidos).find((team) => sameName(team.name, league.team_name))?.logo ?? null
+      await touchLeague(league.id, ownLogo)
     }
 
     return {

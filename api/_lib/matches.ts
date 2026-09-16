@@ -10,8 +10,6 @@ export type MatchValues = {
   courtrack_id: string
   courtrack_league_id: string
   competition_id: string
-  /** Texto de la competición: se sigue escribiendo hasta que el dashboard lea solo competition_id. */
-  competition: string
   played_on: string
   start_time: string | null
   opponent_team_id: string
@@ -102,7 +100,6 @@ export function isUnchanged(row: MatchRow, values: MatchValues): boolean {
     row.courtrack_id === values.courtrack_id &&
     row.courtrack_league_id === values.courtrack_league_id &&
     row.competition_id === values.competition_id &&
-    row.competition === values.competition &&
     row.played_on === values.played_on &&
     (row.start_time?.slice(0, 5) ?? null) === values.start_time &&
     row.opponent_team_id === values.opponent_team_id &&
