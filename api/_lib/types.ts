@@ -49,7 +49,7 @@ export type SyncLeague = {
   is_active: boolean
   last_synced_at: string | null
   archived_at: string | null
-  archive_reason: 'reset' | 'removed' | 'manual' | null
+  archive_reason: 'reset' | 'removed' | null
   /** Hay instantánea de clasificación y fixture guardada. */
   snapshot_at: string | null
   /** Último sync real de esta liga, si lo hubo. */

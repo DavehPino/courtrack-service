@@ -19,7 +19,7 @@ export type League = {
   is_active: boolean
   last_synced_at: string | null
   archived_at: string | null
-  archive_reason: 'reset' | 'removed' | 'manual' | null
+  archive_reason: 'reset' | 'removed' | null
   snapshot_at: string | null
 }
 
@@ -32,7 +32,7 @@ type Row = Omit<League, 'competition' | 'archive_reason'> & {
   archive_reason: string | null
 }
 
-const REASONS = ['reset', 'removed', 'manual'] as const
+const REASONS = ['reset', 'removed'] as const
 
 function toLeague(row: Row): League {
   if (!row.competition) throw new Error(`La liga ${row.id} no tiene competición`)
@@ -96,7 +96,7 @@ export async function saveSnapshot(id: string, snapshot: Snapshot): Promise<void
 }
 
 /** Cierra la temporada: conserva partidos, instantánea y nombre; deja de sincronizarse. */
-export async function archiveLeague(id: string, reason: 'reset' | 'removed' | 'manual'): Promise<void> {
+export async function archiveLeague(id: string, reason: 'reset' | 'removed'): Promise<void> {
   const { error } = await db()
     .from('courtrack_leagues')
     .update({ archived_at: new Date().toISOString(), archive_reason: reason, is_active: false })
