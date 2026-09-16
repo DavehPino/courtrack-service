@@ -27,7 +27,11 @@ function print(result: SyncResult): void {
   for (const match of result.matches) {
     const score = match.status === 'played' ? `${match.home_sets ?? '–'}-${match.away_sets ?? '–'}` : 'vs'
     const detail = match.reason ? ` (${match.reason})` : match.slug ? ` → ${match.slug}` : ''
-    const rival = match.opponent?.created ? ' · rival nuevo' : ''
+    const rival = match.opponent?.created
+      ? ' · rival nuevo'
+      : match.opponent?.renamed_from
+        ? ` · rival renombrado: ${match.opponent.renamed_from} → ${match.opponent.name}`
+        : ''
     console.log(`  ${match.played_on}  ${match.home} ${score} ${match.away}  [${ACTION_LABELS[match.action]}]${detail}${rival}`)
   }
   console.log(

@@ -27,7 +27,8 @@ export type SyncMatchReport = {
   reason?: string
   /** Slug del partido en el dashboard (previsto, si es dry run). */
   slug?: string
-  opponent?: { name: string; created: boolean }
+  /** `renamed_from`: nombre que tenía en el dashboard antes de que CourtTrack lo pisara. */
+  opponent?: { name: string; created: boolean; renamed_from?: string }
 }
 
 export type SyncSummary = {

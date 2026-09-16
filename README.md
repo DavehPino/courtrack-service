@@ -42,9 +42,12 @@ Dashboard (botón Sincronizar)
   mismo día contra el mismo rival (sin `courtrack_id`), se **vincula** (se le pone el id y se actualizan los datos de
   resultado) en vez de duplicarlo. `slug`, `summary`, `cover_image_url`, `activity_id` y los videos nunca se tocan.
 - **Sin cambios:** si la fila ya tiene exactamente los datos de CourtTrack no se escribe nada.
-- **Rivales:** un rival ya cargado sin escudo hereda el logo de CourtTrack. Para unir nombres distintos
-  (`ONAS` ↔ `Onas Vóley`) usa `COURTRACK_TEAM_ALIASES`; revisa siempre la **vista previa** antes de la primera
-  sincronización para no crear rivales duplicados.
+- **Rivales:** CourtTrack es la fuente de verdad. Un rival existente pasa a tener el nombre de CourtTrack en
+  mayúscula inicial (`DRAGONXS HIELO` → `Dragonxs Hielo`) y su logo; la abreviatura se conserva (CourtTrack no la
+  publica) y solo se genera si está vacía. Si el nombre nuevo choca con otro equipo, se conserva el anterior. Para
+  que un rival cargado a mano con otra grafía (`ONAS` ↔ `Las Onas`) se reconozca la primera vez, usa
+  `COURTRACK_TEAM_ALIASES`; después del primer sync ya coincide por nombre. Revisa siempre la **vista previa** antes
+  de la primera sincronización para no crear rivales duplicados.
 - **Omitidos:** partidos `upcoming`, con fecha futura o sin parciales.
 
 ## Puesta en marcha

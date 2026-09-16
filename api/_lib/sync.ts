@@ -55,7 +55,11 @@ async function importPartido(partido: Partido, ours: Side, ctx: Context): Promis
   const rivalName = ours === 'a' ? partido.id_equipo_b : partido.id_equipo_a
   const rivalLogo = cleanText(ours === 'a' ? partido.logo_b : partido.logo_a)
   const rival = await ctx.resolver.resolve(rivalName, rivalLogo)
-  report.opponent = { name: rival.team.name, created: rival.created }
+  report.opponent = {
+    name: rival.team.name,
+    created: rival.created,
+    ...(rival.renamed_from ? { renamed_from: rival.renamed_from } : {}),
+  }
 
   const values: MatchValues = {
     courtrack_id: report.courtrack_id,
