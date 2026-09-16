@@ -1,11 +1,12 @@
-// GET  /api/sync?org_id= → SyncStatus: cupo restante, ligas configuradas y últimas sincronizaciones.
-// POST /api/sync { org_id, league_id?, dry_run? } → SyncResult de esa liga (sin league_id: la única activa).
-//   429 `quota_exceeded` si se agotó el cupo diario · 404 `league_not_found` · 409 `league_inactive` · 400 `league_required`.
+// GET  /api/sync?org_id= → SyncStatus: cupo restante, temporadas configuradas (abiertas y archivadas) y últimas ejecuciones.
+// POST /api/sync { org_id, league_id?, dry_run? }
+//   con league_id → SyncResult de esa temporada · sin league_id → SyncAllResult de todas las activas (un solo cupo).
+//   429 `quota_exceeded` · 404 `league_not_found` · 409 `league_inactive` | `league_archived`.
 // Ambas exigen `Authorization: Bearer <SYNC_SECRET>`.
 import { z } from 'zod'
 import { requireSecret } from './_lib/auth.js'
 import { handle, noStore, parseBody, parseQuery } from './_lib/http.js'
-import { getSyncStatus, runSync } from './_lib/sync.js'
+import { getSyncStatus, runSync, runSyncAll } from './_lib/sync.js'
 
 const orgId = z.string().trim().min(1).max(80)
 
@@ -26,5 +27,6 @@ export const GET = handle(async (request) => {
 export const POST = handle(async (request) => {
   requireSecret(request)
   const input = await parseBody(request, syncInput)
-  return noStore(await runSync({ orgId: input.org_id, leagueId: input.league_id, dryRun: input.dry_run }))
+  if (input.league_id) return noStore(await runSync({ orgId: input.org_id, leagueId: input.league_id, dryRun: input.dry_run }))
+  return noStore(await runSyncAll({ orgId: input.org_id, dryRun: input.dry_run }))
 })

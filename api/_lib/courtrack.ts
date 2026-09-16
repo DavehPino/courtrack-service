@@ -4,8 +4,8 @@
 import { z } from 'zod'
 import { env } from './env.js'
 import { HttpError } from './http.js'
-import { titleCase } from './text.js'
-import type { CourtrackCliente, CourtrackEquipo, CourtrackLiga } from './types.js'
+import { sameName, titleCase } from './text.js'
+import type { CourtrackCliente, CourtrackDiscoveredLiga, CourtrackEquipo, CourtrackLiga } from './types.js'
 
 const REQUEST_TIMEOUT_MS = 8_000
 /** Un reintento ante fallo de red, timeout o 5xx. */
@@ -137,9 +137,8 @@ async function fetchLigas(idCliente: number): Promise<Liga[]> {
   return parseEach(ligaSchema, raw, 'getLigas')
 }
 
-/** Ligas de una asociación, para elegir cuál sincronizar. */
-export async function getLigas(idCliente: number): Promise<CourtrackLiga[]> {
-  return (await fetchLigas(idCliente)).map((liga) => ({
+export function ligaSummary(liga: Liga): CourtrackLiga {
+  return {
     id: liga.id,
     nombre: liga.nombre,
     descripcion: liga.descripcion ?? null,
@@ -148,7 +147,58 @@ export async function getLigas(idCliente: number): Promise<CourtrackLiga[]> {
       id: etapa.id,
       titulo: [etapa.descripcion, etapa.division, etapa.titulo].filter(Boolean).join(' · ') || String(etapa.id),
     })),
-  }))
+  }
+}
+
+/** Ligas de una asociación, para elegir cuál sincronizar. */
+export async function getLigas(idCliente: number): Promise<CourtrackLiga[]> {
+  return (await fetchLigas(idCliente)).map(ligaSummary)
+}
+
+/** Ligas de la asociación en las que juega el equipo (busca su nombre en los partidos de cada liga). */
+export async function discoverLeagues(idCliente: number, teamName: string): Promise<CourtrackDiscoveredLiga[]> {
+  const ligas = await fetchLigas(idCliente)
+  const found: CourtrackDiscoveredLiga[] = []
+  // De cuatro en cuatro: PODIO tiene ~13 ligas y cada findPartidos tarda medio segundo.
+  const pending = [...ligas]
+  await Promise.all(
+    Array.from({ length: Math.min(4, pending.length) }, async () => {
+      for (let liga = pending.shift(); liga; liga = pending.shift()) {
+        try {
+          const partidos = await findPartidos(liga)
+          const team = teamsFromPartidos(partidos).find((item) => sameName(item.name, teamName))
+          if (!team) continue
+          found.push({
+            liga: ligaSummary(liga),
+            team,
+            total_matches: partidos.length,
+            played_matches: partidos.filter((partido) => partido.status === 'played').length,
+          })
+        } catch (err) {
+          console.warn(`CourtTrack: no se pudo leer la liga ${liga.id}`, err)
+        }
+      }
+    }),
+  )
+  return found.sort((a, b) => a.liga.id - b.liga.id)
+}
+
+/** Clasificación de cada etapa de la liga, tal cual la devuelve CourtTrack (se guarda como instantánea). */
+export async function getPosiciones(liga: Liga): Promise<unknown[]> {
+  const etapas = String(liga.id_etapas)
+    .split(',')
+    .map((value) => value.trim())
+    .filter(Boolean)
+  const tables: unknown[] = []
+  for (const etapa of etapas) {
+    const raw = await fetchJson('/api/torneo/getPosiciones', {
+      id_torneos: liga.id_torneos.map(String).join(','),
+      id_etapas: etapa,
+    })
+    const items = Array.isArray(raw) ? raw : (raw as { data?: unknown[] } | null)?.data
+    if (Array.isArray(items)) tables.push(...items)
+  }
+  return tables
 }
 
 /** Liga concreta con sus torneos y etapas actuales (cambian a mitad de temporada: se resuelven en cada sync). */

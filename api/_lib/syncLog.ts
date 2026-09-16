@@ -9,8 +9,11 @@ const WINDOW_MS = 24 * 60 * 60 * 1000
 /** Estados que consumen cupo. Los rechazados por cupo no cuentan (si no, un rechazo alargaría el bloqueo). */
 const COUNTED = ['running', 'success', 'error']
 
-/** Registra el intento antes de empezar: así dos clics simultáneos se ven el uno al otro al contar. */
-export async function beginSync(orgId: string, leagueId: string): Promise<string> {
+/**
+ * Registra el intento antes de empezar: así dos clics simultáneos se ven el uno al otro al contar.
+ * `leagueId` null = sync de todas las ligas activas (el resumen por liga va dentro de `result.leagues`).
+ */
+export async function beginSync(orgId: string, leagueId: string | null): Promise<string> {
   const { data, error } = await db()
     .from('sync_log')
     .insert({ org_id: orgId, source: SOURCE, status: 'running', dry_run: false, courtrack_league_id: leagueId })
@@ -23,7 +26,7 @@ export async function beginSync(orgId: string, leagueId: string): Promise<string
 export async function finishSync(
   id: string,
   status: 'success' | 'error' | 'rejected',
-  result: SyncSummary | null,
+  result: (SyncSummary & { leagues?: Record<string, SyncSummary> }) | null,
   errorMessage: string | null = null,
 ): Promise<void> {
   const { error } = await db()
@@ -66,15 +69,19 @@ function toEntry(row: {
   error: string | null
 }): SyncLogEntry {
   const status = (['running', 'success', 'error', 'rejected'] as const).find((value) => value === row.status) ?? 'error'
-  const summary =
-    row.result && typeof row.result === 'object' && !Array.isArray(row.result) ? (row.result as unknown as SyncSummary) : null
+  const stored =
+    row.result && typeof row.result === 'object' && !Array.isArray(row.result)
+      ? (row.result as unknown as SyncSummary & { leagues?: Record<string, SyncSummary> })
+      : null
+  const { leagues, ...summary } = stored ?? { leagues: undefined }
   return {
     id: row.id,
     league_id: row.courtrack_league_id,
     status,
     started_at: row.started_at,
     finished_at: row.finished_at,
-    summary,
+    summary: stored ? (summary as SyncSummary) : null,
+    ...(leagues ? { leagues } : {}),
     error: row.error,
   }
 }

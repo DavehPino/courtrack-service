@@ -25,7 +25,16 @@ export type CourtrackEquipo = {
   matches: number
 }
 
-// ─── Ligas configuradas por la organización ──────────────────────────────────
+/** Liga de una asociación en la que juega el equipo buscado (descubrimiento). */
+export type CourtrackDiscoveredLiga = {
+  liga: CourtrackLiga
+  team: CourtrackEquipo
+  /** Partidos totales de la liga y cuántos ya están jugados. */
+  total_matches: number
+  played_matches: number
+}
+
+// ─── Ligas (temporadas) configuradas por la organización ─────────────────────
 export type SyncLeague = {
   id: string
   competition: { id: string; name: string; kind: string }
@@ -33,10 +42,16 @@ export type SyncLeague = {
   cliente_name: string | null
   liga_id: number
   liga_name: string
+  /** Nombre de la temporada tal como la publicaba CourtTrack (se congela al archivar). */
+  season_label: string
   team_name: string
   team_logo_url: string | null
   is_active: boolean
   last_synced_at: string | null
+  archived_at: string | null
+  archive_reason: 'reset' | 'removed' | 'manual' | null
+  /** Hay instantánea de clasificación y fixture guardada. */
+  snapshot_at: string | null
   /** Último sync real de esta liga, si lo hubo. */
   last_sync: SyncLogEntry | null
 }
@@ -84,15 +99,34 @@ export type SyncSummary = {
   rivals_created: string[]
 }
 
+/** CourtTrack reinició o eliminó la liga: la temporada se archivó (y, si sigue existiendo, se abrió otra). */
+export type SeasonEvent = {
+  kind: 'reset' | 'removed'
+  archived_season: string
+  /** Solo en 'reset': temporada nueva ya abierta (id null en vista previa). */
+  new_season?: string
+  new_league_id?: string | null
+}
+
 export type SyncResult = SyncSummary & {
   dry_run: boolean
   league: {
     id: string
     courtrack_id: number
     name: string
+    season_label: string
     competition: { id: string; name: string }
   }
+  season_event?: SeasonEvent
   matches: SyncMatchReport[]
+  quota: SyncQuota
+}
+
+/** Sync de todas las ligas activas de la organización (un solo cupo). */
+export type SyncAllResult = {
+  dry_run: boolean
+  leagues: Omit<SyncResult, 'quota'>[]
+  totals: SyncSummary
   quota: SyncQuota
 }
 
@@ -103,6 +137,8 @@ export type SyncLogEntry = {
   started_at: string
   finished_at: string | null
   summary: SyncSummary | null
+  /** En un sync de todas las ligas: resumen por liga. */
+  leagues?: Record<string, SyncSummary>
   error: string | null
 }
 

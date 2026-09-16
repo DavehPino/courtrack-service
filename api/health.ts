@@ -2,6 +2,6 @@
 import { handle, noStore } from './_lib/http.js'
 
 /** Se sube a mano en cada cambio de contrato (coincide con package.json). */
-export const VERSION = '0.2.0'
+export const VERSION = '0.3.0'
 
 export const GET = handle(async () => noStore({ ok: true, service: 'courtrack-service', version: VERSION }))

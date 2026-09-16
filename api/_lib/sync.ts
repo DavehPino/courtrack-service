@@ -1,17 +1,38 @@
-// Orquestador: liga → cupo → CourtTrack → filtrar partidos propios jugados → rivales → alta/edición en `matches` → registro.
-import { findPartidos, getLiga, partidoSets, teamsFromPartidos, type Partido, type Side } from './courtrack.js'
+// Orquestador: ligas → cupo → CourtTrack → detección de reseteo → partidos propios jugados → rivales → `matches` →
+// instantánea → registro. Un sync puede ser de una liga o de todas las activas (un solo cupo).
+import {
+  findPartidos,
+  getLiga,
+  getPosiciones,
+  partidoSets,
+  teamsFromPartidos,
+  type Liga,
+  type Partido,
+  type Side,
+} from './courtrack.js'
+import type { Json } from './database.types.js'
 import { env } from './env.js'
 import { HttpError } from './http.js'
-import { getLeague, listLeagues, resolveDefaultLeague, touchLeague, type League } from './leagues.js'
+import {
+  archiveLeague,
+  getLeague,
+  listActiveLeagues,
+  listLeagues,
+  openNextSeason,
+  saveSnapshot,
+  storedCourtrackIds,
+  touchLeague,
+  type League,
+} from './leagues.js'
 import { findByCourtrackIds, findManualMatch, insertMatch, isUnchanged, updateMatch, type MatchRow, type MatchValues } from './matches.js'
 import { beginSync, finishSync, getQuota, lastSyncs } from './syncLog.js'
 import { RivalResolver } from './teams.js'
 import { addDays, horarioToTime, matchSlugBase, sameName, tallySets, titleCase, todayIsoDate } from './text.js'
-import type { SyncLogEntry, SyncMatchReport, SyncResult, SyncStatus, SyncSummary } from './types.js'
+import type { SeasonEvent, SyncAllResult, SyncLogEntry, SyncMatchReport, SyncResult, SyncStatus, SyncSummary } from './types.js'
 
 export type SyncOptions = {
   orgId: string
-  /** Liga (courtrack_leagues.id). Si falta, la única activa de la organización. */
+  /** Liga (courtrack_leagues.id). Sin ella se recorren todas las activas de la organización. */
   leagueId?: string
   /** Calcula y devuelve qué haría sin escribir nada (ni partidos, ni rivales, ni vínculos, ni sync_log). */
   dryRun: boolean
@@ -19,7 +40,9 @@ export type SyncOptions = {
   skipQuota?: boolean
 }
 
-const LAST_SYNCS = 20
+const LAST_SYNCS = 30
+
+type LeagueResult = Omit<SyncResult, 'quota'>
 
 type Context = { league: League; resolver: RivalResolver; existing: Map<string, MatchRow>; dryRun: boolean; today: string }
 
@@ -112,69 +135,129 @@ function summarize(scanned: number, matches: SyncMatchReport[], rivalsCreated: s
   }
 }
 
-/** El instante en que se libera cupo viaja en `details.quota.resets_at`; quien llama lo formatea en hora local. */
-const quotaMessage = (limit: number) => `Ya se hicieron ${limit} sincronizaciones en las últimas 24 horas.`
+const EMPTY: SyncSummary = { scanned: 0, own: 0, created: 0, updated: 0, adopted: 0, unchanged: 0, skipped: 0, rivals_created: [] }
 
-export async function runSync({ orgId, leagueId, dryRun, skipQuota = false }: SyncOptions): Promise<SyncResult> {
+function leagueRef(league: League): LeagueResult['league'] {
+  return {
+    id: league.id,
+    courtrack_id: league.liga_id,
+    name: league.liga_name,
+    season_label: league.season_label,
+    competition: { id: league.competition.id, name: league.competition.name },
+  }
+}
+
+/**
+ * CourtTrack resetea la liga al terminar: si guardamos partidos de esta temporada y ninguno sigue publicado,
+ * la temporada terminó. Se archiva (con su instantánea) y, si la liga sigue existiendo, se abre la siguiente.
+ */
+async function detectReset(league: League, partidos: Partido[]): Promise<boolean> {
+  const stored = await storedCourtrackIds(league.id)
+  if (stored.size === 0) return false
+  return !partidos.some((partido) => stored.has(String(partido.id)))
+}
+
+/** Sincroniza una temporada. `resolver` se comparte entre ligas para no resolver el mismo rival dos veces. */
+async function syncLeague(initial: League, dryRun: boolean, resolver: RivalResolver): Promise<LeagueResult> {
+  let league = initial
+  let seasonEvent: SeasonEvent | undefined
+
+  // Torneos y etapas se resuelven en cada sync: CourtTrack añade etapas (playoffs) a mitad de temporada.
+  let liga: Liga
+  try {
+    liga = await getLiga(league.id_cliente, league.liga_id)
+  } catch (err) {
+    if (!(err instanceof HttpError && err.code === 'courtrack_liga_not_found')) throw err
+    if (!dryRun) await archiveLeague(league.id, 'removed')
+    return {
+      ...EMPTY,
+      dry_run: dryRun,
+      league: leagueRef(league),
+      season_event: { kind: 'removed', archived_season: league.season_label },
+      matches: [],
+    }
+  }
+
+  const partidos = await findPartidos(liga)
+
+  if (await detectReset(league, partidos)) {
+    seasonEvent = { kind: 'reset', archived_season: league.season_label, new_season: liga.nombre, new_league_id: null }
+    if (!dryRun) {
+      await archiveLeague(league.id, 'reset')
+      league = await openNextSeason(league, liga.nombre)
+      seasonEvent.new_league_id = league.id
+    }
+  }
+
+  const own = partidos
+    .map((partido) => ({ partido, side: ownSide(partido, league.team_name) }))
+    .filter((item): item is { partido: Partido; side: Side } => item.side !== null)
+    .sort((x, y) => x.partido.fecha.localeCompare(y.partido.fecha) || x.partido.id - y.partido.id)
+
+  const ctx: Context = {
+    league,
+    resolver,
+    // Tras un reseteo simulado (dry run) los partidos viejos no cuentan: en la temporada nueva serían altas.
+    existing: seasonEvent && dryRun ? new Map() : await findByCourtrackIds(own.map(({ partido }) => String(partido.id))),
+    dryRun,
+    today: todayIsoDate(),
+  }
+
+  const matches: SyncMatchReport[] = []
+  for (const { partido, side } of own) matches.push(await importPartido(partido, side, ctx))
+  const summary = summarize(partidos.length, matches, resolver.created)
+
+  if (!dryRun) {
+    const ownLogo = teamsFromPartidos(partidos).find((team) => sameName(team.name, league.team_name))?.logo ?? null
+    await touchLeague(league.id, ownLogo)
+    // La clasificación es lo único que no se puede reconstruir desde nuestros partidos: se guarda tal cual.
+    const standings = await getPosiciones(liga).catch((err: unknown) => {
+      console.warn('CourtTrack: no se pudo leer la clasificación', err)
+      return null
+    })
+    await saveSnapshot(league.id, {
+      liga_name: liga.nombre,
+      standings: standings as Json | null,
+      fixture: partidos as unknown as Json,
+    })
+  }
+
+  return {
+    ...summary,
+    dry_run: dryRun,
+    league: leagueRef(league),
+    ...(seasonEvent ? { season_event: seasonEvent } : {}),
+    matches,
+  }
+}
+
+/** Registra el intento, comprueba el cupo, ejecuta y cierra el registro con el resumen. */
+async function withQuota<T>(
+  orgId: string,
+  leagueId: string | null,
+  { dryRun, skipQuota }: { dryRun: boolean; skipQuota: boolean },
+  run: () => Promise<{ value: T; summary: SyncSummary; leagues?: Record<string, SyncSummary> }>,
+): Promise<T> {
   const limit = env.dailyLimit
-  const league = leagueId ? await getLeague(orgId, leagueId) : await resolveDefaultLeague(orgId)
-  if (!league.is_active) throw new HttpError(409, 'league_inactive', `La liga "${league.liga_name}" está pausada`)
-
   let logId: string | null = null
   if (!dryRun) {
-    logId = await beginSync(orgId, league.id)
+    logId = await beginSync(orgId, leagueId)
     if (!skipQuota) {
       // La cuenta incluye este intento (ya está en `running`): con el cupo agotado supera el límite.
       const quota = await getQuota(orgId, limit)
       if (quota.used > limit) {
         await finishSync(logId, 'rejected', null, 'Cupo diario agotado')
         const current = await getQuota(orgId, limit)
-        throw new HttpError(429, 'quota_exceeded', quotaMessage(limit), { quota: current })
+        throw new HttpError(429, 'quota_exceeded', `Ya se hicieron ${limit} sincronizaciones en las últimas 24 horas.`, {
+          quota: current,
+        })
       }
     }
   }
-
   try {
-    // Torneos y etapas se resuelven en cada sync: CourtTrack añade etapas (playoffs) a mitad de temporada.
-    const liga = await getLiga(league.id_cliente, league.liga_id)
-    const partidos = await findPartidos(liga)
-
-    const own = partidos
-      .map((partido) => ({ partido, side: ownSide(partido, league.team_name) }))
-      .filter((item): item is { partido: Partido; side: Side } => item.side !== null)
-      .sort((x, y) => x.partido.fecha.localeCompare(y.partido.fecha) || x.partido.id - y.partido.id)
-
-    const ctx: Context = {
-      league,
-      resolver: await RivalResolver.load({ orgId, dryRun }),
-      existing: await findByCourtrackIds(own.map(({ partido }) => String(partido.id))),
-      dryRun,
-      today: todayIsoDate(),
-    }
-
-    const matches: SyncMatchReport[] = []
-    for (const { partido, side } of own) matches.push(await importPartido(partido, side, ctx))
-
-    const summary = summarize(partidos.length, matches, ctx.resolver.created)
-    if (logId) {
-      await finishSync(logId, 'success', summary)
-      // El escudo propio tal como lo publica CourtTrack en esta liga (lo muestra el gestor de ligas del dashboard).
-      const ownLogo = teamsFromPartidos(partidos).find((team) => sameName(team.name, league.team_name))?.logo ?? null
-      await touchLeague(league.id, ownLogo)
-    }
-
-    return {
-      ...summary,
-      dry_run: dryRun,
-      league: {
-        id: league.id,
-        courtrack_id: league.liga_id,
-        name: league.liga_name,
-        competition: { id: league.competition.id, name: league.competition.name },
-      },
-      matches,
-      quota: await getQuota(orgId, limit),
-    }
+    const { value, summary, leagues } = await run()
+    if (logId) await finishSync(logId, 'success', leagues ? { ...summary, leagues } : summary)
+    return value
   } catch (err) {
     if (logId) {
       const message = err instanceof Error ? err.message : String(err)
@@ -184,7 +267,68 @@ export async function runSync({ orgId, leagueId, dryRun, skipQuota = false }: Sy
   }
 }
 
-/** Cupo restante, ligas configuradas (con su último sync) y últimas ejecuciones de la organización. */
+function addSummaries(items: SyncSummary[]): SyncSummary {
+  return items.reduce<SyncSummary>(
+    (total, item) => ({
+      scanned: total.scanned + item.scanned,
+      own: total.own + item.own,
+      created: total.created + item.created,
+      updated: total.updated + item.updated,
+      adopted: total.adopted + item.adopted,
+      unchanged: total.unchanged + item.unchanged,
+      skipped: total.skipped + item.skipped,
+      rivals_created: [...new Set([...total.rivals_created, ...item.rivals_created])],
+    }),
+    EMPTY,
+  )
+}
+
+const pickSummary = (result: LeagueResult): SyncSummary => ({
+  scanned: result.scanned,
+  own: result.own,
+  created: result.created,
+  updated: result.updated,
+  adopted: result.adopted,
+  unchanged: result.unchanged,
+  skipped: result.skipped,
+  rivals_created: result.rivals_created,
+})
+
+/** Sincroniza UNA temporada (404 si no es de la org, 409 si está pausada o archivada). */
+export async function runSync({ orgId, leagueId, dryRun, skipQuota = false }: SyncOptions & { leagueId: string }): Promise<SyncResult> {
+  const league = await getLeague(orgId, leagueId)
+  if (league.archived_at) throw new HttpError(409, 'league_archived', `La temporada "${league.season_label}" ya está archivada`)
+  if (!league.is_active) throw new HttpError(409, 'league_inactive', `La liga "${league.liga_name}" está pausada`)
+
+  const result = await withQuota(orgId, league.id, { dryRun, skipQuota }, async () => {
+    const value = await syncLeague(league, dryRun, await RivalResolver.load({ orgId, dryRun }))
+    return { value, summary: pickSummary(value) }
+  })
+  return { ...result, quota: await getQuota(orgId, env.dailyLimit) }
+}
+
+/** Sincroniza TODAS las temporadas activas de la organización con un solo cupo. */
+export async function runSyncAll({ orgId, dryRun, skipQuota = false }: Omit<SyncOptions, 'leagueId'>): Promise<SyncAllResult> {
+  const leagues = await listActiveLeagues(orgId)
+  if (leagues.length === 0) throw new HttpError(404, 'league_not_found', 'La organización no tiene ligas activas')
+
+  const results = await withQuota(orgId, null, { dryRun, skipQuota }, async () => {
+    const resolver = await RivalResolver.load({ orgId, dryRun })
+    const value: LeagueResult[] = []
+    for (const league of leagues) value.push(await syncLeague(league, dryRun, resolver))
+    const perLeague = Object.fromEntries(value.map((item) => [item.league.id, pickSummary(item)]))
+    return { value, summary: addSummaries(value.map(pickSummary)), leagues: perLeague }
+  })
+
+  return {
+    dry_run: dryRun,
+    leagues: results,
+    totals: addSummaries(results.map(pickSummary)),
+    quota: await getQuota(orgId, env.dailyLimit),
+  }
+}
+
+/** Cupo restante, temporadas (abiertas y archivadas, con su último sync) y últimas ejecuciones de la organización. */
 export async function getSyncStatus(orgId: string): Promise<SyncStatus> {
   const [quota, leagues, last] = await Promise.all([
     getQuota(orgId, env.dailyLimit),
@@ -193,7 +337,8 @@ export async function getSyncStatus(orgId: string): Promise<SyncStatus> {
   ])
   const lastByLeague = new Map<string, SyncLogEntry>()
   for (const entry of last) {
-    if (entry.league_id && !lastByLeague.has(entry.league_id)) lastByLeague.set(entry.league_id, entry)
+    const ids = entry.league_id ? [entry.league_id] : Object.keys(entry.leagues ?? {})
+    for (const id of ids) if (!lastByLeague.has(id)) lastByLeague.set(id, entry)
   }
   return {
     org_id: orgId,

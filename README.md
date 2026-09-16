@@ -6,26 +6,37 @@ de datos del dashboard. Es un proyecto aparte de [`coyotes-website`](https://git
 
 - **Multi-liga:** cada organización (`org_id`; hoy solo `coyotes`) configura desde el dashboard las ligas de CourtTrack
   en las que juega (tabla `courtrack_leagues`), cada una colgada de una competición del dashboard (`competitions`).
-- **Trigger:** el botón **Sincronizar** de Partidos, una liga por vez (sin cron). También hay CLI.
+  El dashboard puede **descubrirlas** (`/api/courtrack/descubrir`): ligas de una asociación donde aparece el equipo.
+- **Temporadas e histórico:** CourtTrack resetea las ligas al terminar. Cada fila de `courtrack_leagues` es una
+  temporada; cuando el sync detecta el reseteo la archiva y abre la siguiente, y en cada sync guarda una instantánea
+  de la clasificación y del fixture. Los partidos quedan colgados de su temporada: nada se pierde.
+- **Trigger:** el botón **Sincronizar** de Partidos recorre todas las ligas activas con un solo cupo (sin cron); desde
+  Ligas se puede sincronizar una sola. También hay CLI.
 - **Cupo:** máximo `SYNC_DAILY_LIMIT` sincronizaciones reales por organización en 24 h, contadas en `sync_log`.
-- **Alcance:** solo los partidos del equipo propio de esa liga (`team_name`) y solo los ya jugados.
+- **Alcance:** solo los partidos del equipo propio de cada liga (`team_name`) y solo los ya jugados.
 
 Stack: Vercel Functions (Node.js, firma Web `Request → Response`), Supabase (`@supabase/supabase-js`), Zod, TypeScript.
 
 ## Cómo funciona
 
 ```
-Dashboard (Partidos → Sincronizar, elige liga)
-  └─ POST /api/admin/courtrack-sync { league_id }   (coyotes-website, palabra clave del equipo)
-       └─ POST /api/sync { org_id, league_id }      (este servicio, Authorization: Bearer SYNC_SECRET)
-            1. lee la liga de courtrack_leagues (404 si no es de la org, 409 si está pausada)
+Dashboard (Partidos → Sincronizar)
+  └─ POST /api/admin/courtrack-sync { league_id? }  (coyotes-website, palabra clave del equipo)
+       └─ POST /api/sync { org_id, league_id? }     (este servicio, Authorization: Bearer SYNC_SECRET)
+            1. temporadas a recorrer: la indicada (404 si no es de la org, 409 si está pausada o archivada)
+               o todas las activas de la organización
             2. inserta la fila en sync_log (running) y cuenta las de las últimas 24 h → 429 si supera el cupo
-            3. GET getLigas?id_cliente= → torneos y etapas ACTUALES de la liga (cambian con los playoffs)
-            4. GET findPartidos?id_torneos=…&id_etapas=… → todos los partidos con parciales
+            por cada temporada:
+            3. GET getLigas?id_cliente= → torneos y etapas ACTUALES de la liga (cambian con los playoffs).
+               Si la liga ya no existe → temporada archivada ('removed')
+            4. GET findPartidos?id_torneos=…&id_etapas=… → todos los partidos con parciales.
+               Si guardamos partidos de la temporada y ninguno sigue publicado → reseteo: se archiva ('reset')
+               y se abre la temporada siguiente bajo la misma competición
             5. filtra los del equipo propio con status = played
             6. resuelve el rival en `teams`: vínculo guardado → nombre normalizado → alta (y guarda el vínculo)
             7. crea o actualiza la fila de `matches` (clave: matches.courtrack_id) con competition_id y courtrack_league_id
-            8. cierra la fila de sync_log con el resumen y anota last_synced_at en la liga
+            8. GET getPosiciones por etapa → instantánea (standings + fixture) en la temporada, last_synced_at y escudo propio
+            9. cierra la fila de sync_log con el resumen (por liga si fue un sync de todas)
 ```
 
 ### Reglas de importación
@@ -80,15 +91,14 @@ La liga, el equipo propio y la competición **no** son variables: se configuran 
 ```bash
 npm install
 npm run typecheck
-npm run sync -- --list                    # ligas configuradas de la organización (con su id)
-npm run sync:dry -- --league <uuid>       # vista previa: no escribe nada ni gasta cupo
-npm run sync -- --league <uuid>           # sincroniza (respeta el cupo)
+npm run sync -- --list                    # temporadas configuradas de la organización (abiertas y archivadas)
+npm run sync:dry                          # vista previa de todas las ligas activas: no escribe nada ni gasta cupo
+npm run sync                              # sincroniza todas las activas (un cupo)
+npm run sync -- --league <uuid>           # solo esa temporada (también con --dry-run)
 npm run sync -- --force                   # ignora el cupo (el intento se registra igual)
 npm run sync -- --json                    # salida JSON completa · --org <id> (default coyotes)
 npm run dev                               # vercel dev en el puerto 3100 (el dashboard usa el 3000)
 ```
-
-Sin `--league` se usa la única liga activa de la organización (error `league_required` si hay varias).
 
 ### 4. Deploy en Vercel
 
@@ -103,11 +113,12 @@ Todas las rutas salvo `/api/health` exigen `Authorization: Bearer <SYNC_SECRET>`
 | Método | Ruta | Respuesta |
 |---|---|---|
 | GET | `/api/health` | `{ ok: true }` (sin auth) |
-| GET | `/api/sync?org_id=` | `SyncStatus`: `{ org_id, quota, leagues, last_syncs }` |
-| POST | `/api/sync` | `SyncResult`. Cuerpo `{ org_id, league_id?, dry_run? }`. **429 `quota_exceeded`** (con `details.quota`), 404 `league_not_found`, 409 `league_inactive`, 400 `league_required` |
+| GET | `/api/sync?org_id=` | `SyncStatus`: `{ org_id, quota, leagues, last_syncs }` (temporadas abiertas y archivadas, con `season_label`, `archived_at`, `archive_reason`, `snapshot_at` y `last_sync`) |
+| POST | `/api/sync` | Cuerpo `{ org_id, league_id?, dry_run? }`. Con `league_id` → `SyncResult` de esa temporada; sin él → `SyncAllResult` `{ leagues, totals, quota }` de todas las activas (un cupo). Cada resultado puede traer `season_event` (`reset` \| `removed`). **429 `quota_exceeded`** (con `details.quota`), 404 `league_not_found`, 409 `league_inactive` \| `league_archived` |
 | GET | `/api/courtrack/clientes` | Asociaciones de CourtTrack `{ id, nombre, titulo, logo, deporte }[]` |
 | GET | `/api/courtrack/ligas?id_cliente=5` | Ligas de una asociación `{ id, nombre, descripcion, logo, etapas }[]` |
 | GET | `/api/courtrack/equipos?id_cliente=5&liga_id=605` | Equipos de la liga `{ name, display_name, logo, matches }[]` (derivados de los partidos; `getEquipos` no responde) |
+| GET | `/api/courtrack/descubrir?id_cliente=5&team=COYOTES` | Ligas de la asociación donde juega el equipo `{ liga, team, total_matches, played_matches }[]` (recorre sus partidos, ~2 s para PODIO) |
 
 ```jsonc
 // POST /api/sync → 200
@@ -130,11 +141,28 @@ Todas las rutas salvo `/api/health` exigen `Authorization: Bearer <SYNC_SECRET>`
 
 Los contratos están en `api/_lib/types.ts` (el dashboard los copia en `shared/schemas.ts`).
 
+### Temporadas y reseteo de ligas
+
+PODIO (y otras asociaciones) reinician la liga cuando termina: los partidos desaparecen de CourtTrack. Para no perder
+el histórico, cada fila de `courtrack_leagues` es una **temporada** y el sync:
+
+- Detecta el reseteo cuando la temporada tiene partidos guardados y **ninguno** de sus `courtrack_id` sigue en
+  `findPartidos`. Entonces archiva la fila (`archived_at`, `archive_reason = 'reset'`), abre otra con el mismo
+  `liga_id`, competición, asociación y equipo (`season_label` = nombre actual de la liga) y sigue sincronizando en la
+  nueva. Si `getLigas` ya no devuelve la liga, la archiva con `'removed'`.
+- Guarda en cada sync una **instantánea** (`standings` = `getPosiciones` de todas las etapas, `fixture` =
+  `findPartidos` completo, `snapshot_at`). Al archivar queda congelada: es la clasificación final de la temporada.
+- Los partidos importados apuntan a su temporada (`matches.courtrack_league_id`), así que el dashboard puede filtrar
+  por competición y por temporada, y mostrar la clasificación archivada.
+
+Índice único parcial `(org_id, liga_id) where archived_at is null`: solo una temporada abierta por liga.
+
 ### Cupo y `sync_log`
 
-Cada sync real inserta una fila **antes** de empezar (`status = running`, con `courtrack_league_id`) y cuenta las filas
-`running | success | error` de su `org_id` en las últimas 24 h, sumando todas las ligas: si superan `SYNC_DAILY_LIMIT`,
-la fila pasa a `rejected` (no consume cupo) y se responde 429. Las vistas previas no se registran ni cuentan.
+Cada sync real inserta una fila **antes** de empezar (`status = running`; `courtrack_league_id` de la temporada, o
+null si fue un sync de todas las activas, cuyo `result.leagues` trae el resumen por liga) y cuenta las filas
+`running | success | error` de su `org_id` en las últimas 24 h: si superan `SYNC_DAILY_LIMIT`, la fila pasa a
+`rejected` (no consume cupo) y se responde 429. Las vistas previas no se registran ni cuentan.
 
 ### Seguridad
 

@@ -1,7 +1,7 @@
 {
   "name": "courtrack-service",
   "private": true,
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Microservicio que trae los resultados de Liga Podio desde CourtTrack a Supabase",
   "type": "module",
   "scripts": {

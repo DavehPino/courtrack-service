@@ -22,7 +22,6 @@ type MatchRow = {
   opponent_team_id: string
   is_home: boolean
   location: string | null
-  competition: string | null
   phase: string | null
   sets_won: number | null
   sets_lost: number | null
@@ -67,10 +66,16 @@ type CourtrackLeagueRow = {
   cliente_name: string | null
   liga_id: number
   liga_name: string
+  season_label: string
   team_name: string
   team_logo_url: string | null
   is_active: boolean
   last_synced_at: string | null
+  archived_at: string | null
+  archive_reason: string | null
+  standings: Json | null
+  fixture: Json | null
+  snapshot_at: string | null
   created_at: string
   updated_at: string
 }
@@ -106,7 +111,6 @@ export type Database = {
           | 'start_time'
           | 'is_home'
           | 'location'
-          | 'competition'
           | 'phase'
           | 'sets_won'
           | 'sets_lost'
@@ -142,7 +146,18 @@ export type Database = {
         Row: CourtrackLeagueRow
         Insert: Optional<
           CourtrackLeagueRow,
-          'id' | 'cliente_name' | 'team_logo_url' | 'is_active' | 'last_synced_at' | 'created_at' | 'updated_at'
+          | 'id'
+          | 'cliente_name'
+          | 'team_logo_url'
+          | 'is_active'
+          | 'last_synced_at'
+          | 'archived_at'
+          | 'archive_reason'
+          | 'standings'
+          | 'fixture'
+          | 'snapshot_at'
+          | 'created_at'
+          | 'updated_at'
         >
         Update: Partial<CourtrackLeagueRow>
         Relationships: [
