@@ -1,0 +1,18 @@
+node_modules
+.vercel
+*.tsbuildinfo
+
+# Variables de entorno (nunca subir secretos)
+.env
+.env.local
+.env.*.local
+
+# SO / editores
+.DS_Store
+Thumbs.db
+.vscode/*
+!.vscode/extensions.json
+.idea
+
+# Claude Code (configuración local)
+.claude/

@@ -1,0 +1,23 @@
+{
+  "name": "courtrack-service",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Microservicio que trae los resultados de Liga Podio desde CourtTrack a Supabase",
+  "type": "module",
+  "scripts": {
+    "dev": "vercel dev --listen 3100",
+    "typecheck": "tsc -p tsconfig.json",
+    "build": "npm run typecheck",
+    "sync": "node --env-file=.env --import tsx scripts/sync.ts",
+    "sync:dry": "node --env-file=.env --import tsx scripts/sync.ts --dry-run"
+  },
+  "dependencies": {
+    "@supabase/supabase-js": "^2.116.0",
+    "zod": "^4.6.3"
+  },
+  "devDependencies": {
+    "@types/node": "^22.20.2",
+    "tsx": "^4.20.6",
+    "typescript": "^7.0.2"
+  }
+}
