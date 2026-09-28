@@ -97,6 +97,7 @@ npm run sync                              # sincroniza todas las activas (un cup
 npm run sync -- --league <uuid>           # solo esa temporada (también con --dry-run)
 npm run sync -- --force                   # ignora el cupo (el intento se registra igual)
 npm run sync -- --json                    # salida JSON completa · --org <id> (default coyotes)
+npm run check:courtrack                   # chequeo de contrato contra CourtTrack (--partido <ids> · --liga · --last)
 npm run dev                               # vercel dev en el puerto 3100 (el dashboard usa el 3000)
 ```
 
@@ -186,8 +187,10 @@ sincronizar cualquier organización: con el multitenant el token pasará a ser p
   `erroresSaqueA` y `erroresNoForzadosA` son puntos que **recibió** A por errores de B, de modo que `totalA` es la
   suma de los cinco; el servicio los devuelve como errores cometidos por cada equipo),
   `progresion` (`set1…setN`: cada entrada trae el marcador **antes** de la acción y `eventoA` o `eventoB` según el
-  equipo que la protagoniza, con `tipo` puntoAtaque|puntoSaque|puntoBloqueo|errorSaque|error|tiempo|cambio y
-  `descripcion` "12-GRASSI"; la última entrada es el marcador final), `estadisticasJugador` (los dos equipos, con
+  equipo que la protagoniza, con `tipo` puntoAtaque|puntoSaque|puntoBloqueo|errorSaque|error|tiempo|cambio|sanction:*
+  y `descripcion`: "12-GRASSI" hasta el 2026-09-27; desde entonces con técnica y rival, "Punto Directo 1-ROJAS" o
+  "10-RODAS Fuerza Error
+de 50-VELASQUEZ FLORES"; la última entrada es el marcador final), `estadisticasJugador` (los dos equipos, con
   `tipo` "jugador,capitan"/"jugador,libero", `puntosDisputados` y el `AIScore` propio de CourtTrack), MVP, duración
   y horas reales. Los totales por jugador coinciden con los que se derivan de la progresión. Un id inexistente
   **cierra la conexión** sin respuesta.
@@ -197,6 +200,9 @@ sincronizar cualquier organización: con el multitenant el token pasará a ser p
 
 Es una API privada sin documentar: puede cambiar sin aviso. Todo lo que depende de su forma está en
 `api/_lib/courtrack.ts` (validado con Zod; un cambio de formato responde 502 `courtrack_schema`).
+`npm run check:courtrack` comprueba el contrato contra partidos reales (esquemas, tipos de evento, totales por jugador
+y marcadores). Cuando algo cambia, el procedimiento está en [`docs/handoff-courtrack.md`](docs/handoff-courtrack.md)
+(en Claude Code, `/courtrack-repair`).
 
 ## Estructura
 
@@ -220,5 +226,6 @@ api/
     sync.ts               orquestador (runSync, getSyncStatus)
     types.ts              contratos
 scripts/sync.ts           CLI
+scripts/check-courtrack.ts chequeo de contrato con CourtTrack (docs/handoff-courtrack.md)
 public/index.html         página estática mínima (Vercel necesita un output directory)
 ```

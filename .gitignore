@@ -14,5 +14,6 @@ Thumbs.db
 !.vscode/extensions.json
 .idea
 
-# Claude Code (configuración local)
-.claude/
+# Claude Code (configuración local; los skills del proyecto sí se versionan)
+.claude/*
+!.claude/skills/

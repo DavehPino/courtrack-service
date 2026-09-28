@@ -171,6 +171,8 @@ export type CourtrackSetEventKind =
   | 'unforced_error'
   | 'timeout'
   | 'substitution'
+  /** Tarjeta o advertencia (verde, por demora...): no mueve el marcador. */
+  | 'sanction'
   | 'other'
 
 /** Un paso de la progresión de un set: quién hizo qué y cómo quedó el marcador. */
@@ -181,9 +183,12 @@ export type CourtrackSetEvent = {
   /** Equipo protagonista: el que anota o, en los errores, el que lo comete. */
   side: 'a' | 'b'
   kind: CourtrackSetEventKind
-  /** "12-GRASSI" en CourtTrack → `{ number: 12, name: 'Grassi' }`. */
+  /** Protagonista: "12-GRASSI" en CourtTrack → `{ number: 12, name: 'Grassi' }`. */
   player: { number: number | null; name: string } | null
-  /** Texto de una sustitución: "Entra #27 Carrion · Sale #17 Rios". */
+  /**
+   * Técnica de la acción ("Punto directo", "Fuerza error de #50 Velasquez Flores", "Ataque a la red") o el texto de
+   * una sustitución ("Entra #27 Carrion · Sale #17 Rios"). Null si CourtTrack no la da (partidos anteriores al 2026-09-27).
+   */
   detail: string | null
 }
 

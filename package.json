@@ -9,7 +9,8 @@
     "typecheck": "tsc -p tsconfig.json",
     "build": "npm run typecheck",
     "sync": "node --env-file=.env --import tsx scripts/sync.ts",
-    "sync:dry": "node --env-file=.env --import tsx scripts/sync.ts --dry-run"
+    "sync:dry": "node --env-file=.env --import tsx scripts/sync.ts --dry-run",
+    "check:courtrack": "node --env-file=.env --import tsx scripts/check-courtrack.ts"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.116.0",

@@ -377,17 +377,75 @@ const EVENT_KINDS: Record<string, CourtrackSetEventKind> = {
   cambio: 'substitution',
 }
 
+/** Acciones que no mueven el marcador. */
+const NON_POINT_KINDS = new Set<CourtrackSetEventKind>(['timeout', 'substitution', 'sanction'])
+
+/** "sanction:green", "sanction:delay" (y las que vengan: amarilla, roja...) son sanciones. */
+const eventKind = (tipo: string | null | undefined): CourtrackSetEventKind =>
+  EVENT_KINDS[tipo ?? ''] ?? (tipo?.startsWith('sanction') ? 'sanction' : 'other')
+
 /** "16:06hs" → "16:06". */
 function formattedTime(value: string | null | undefined): string | null {
   const match = value?.match(/^(\d{1,2}):(\d{2})/)
   return match ? `${match[1]!.padStart(2, '0')}:${match[2]}` : null
 }
 
-/** "12-GRASSI" → { number: 12, name: "Grassi" }; sin dorsal, solo el nombre. */
-function eventPlayer(description: string | null): CourtrackSetEvent['player'] {
-  if (!description) return null
-  const match = description.match(/^(\d+)\s*-\s*(.+)$/)
-  return match ? { number: Number(match[1]), name: titleCase(match[2]!) } : { number: null, name: titleCase(description) }
+/**
+ * Jugador citado en una descripción: dorsal y apellidos en mayúsculas ("50-VELASQUEZ FLORES"). El nombre acaba en
+ * la primera palabra que no está entera en mayúsculas ("10-RODAS Fuerza Error de ...").
+ */
+const PLAYER_REF = /(\d+)\s*-\s*((?:[\p{Lu}'.-]+(?:\s+|$))+)/gu
+
+type EventDescription = Pick<CourtrackSetEvent, 'player' | 'detail'>
+
+/**
+ * Descripción de una acción de la progresión. Hasta septiembre de 2026 era solo el jugador ("12-GRASSI"); desde el
+ * 2026-09-27 trae además la técnica y, a veces, al rival involucrado:
+ *   "Punto Directo 1-ROJAS", "Ataque a la Red 13-ROMERO", "Afuera 86-SUAREZ"      → técnica + jugador
+ *   "10-RODAS Fuerza Error\r\nde 50-VELASQUEZ FLORES", "6-REYNOSO Del Ataque\r\nde 14-TORRES" → jugador + relación + rival
+ * El protagonista es siempre el primer jugador citado; el resto del texto queda en `detail`, con los rivales como "#50 Velasquez Flores".
+ */
+export function parseEventDescription(description: string | null): EventDescription {
+  const clean = description?.replace(/\s+/g, ' ').trim()
+  if (!clean) return { player: null, detail: null }
+
+  const refs = [...clean.matchAll(PLAYER_REF)]
+  if (refs.length === 0) {
+    const legacy = clean.match(/^(\d+)\s*-\s*(.+)$/)
+    if (legacy) return { player: { number: Number(legacy[1]), name: titleCase(legacy[2]!) }, detail: null }
+    // Sin dorsal: si está en mayúsculas es un nombre; si no, es la técnica sin jugador.
+    return clean === clean.toLocaleUpperCase('es')
+      ? { player: { number: null, name: titleCase(clean) }, detail: null }
+      : { player: null, detail: sentenceCase(clean.toLocaleLowerCase('es')) }
+  }
+
+  const actor = refs[0]!
+  const parts: string[] = []
+  let cursor = 0
+  for (const ref of refs) {
+    parts.push(clean.slice(cursor, ref.index).toLocaleLowerCase('es'))
+    if (ref !== actor) parts.push(`#${ref[1]} ${titleCase(ref[2]!)} `)
+    cursor = ref.index + ref[0].length
+  }
+  parts.push(clean.slice(cursor).toLocaleLowerCase('es'))
+  const detail = parts.join('').replace(/\s+/g, ' ').trim()
+
+  return { player: { number: Number(actor[1]), name: titleCase(actor[2]!) }, detail: detail ? sentenceCase(detail) : null }
+}
+
+/** Sanción: titulo "TARJETA VERDE" y descripcion "#1 ALONSO" (vacía en las advertencias por demora; "#0 " sin nombre). */
+function sanctionDescription(titulo: string | null | undefined, description: string | null): EventDescription {
+  const match = description?.match(/^#(\d+)\s*(.*)$/)
+  const name = match?.[2]?.trim()
+  return {
+    player: match && name ? { number: Number(match[1]), name: titleCase(name) } : null,
+    detail: titulo?.trim() ? sentenceCase(titulo.trim().toLocaleLowerCase('es')) : null,
+  }
+}
+
+/** "fuerza error de #50 Velasquez Flores" → "Fuerza error de #50 Velasquez Flores". */
+function sentenceCase(text: string): string {
+  return text.charAt(0).toLocaleUpperCase('es') + text.slice(1)
 }
 
 /**
@@ -436,26 +494,27 @@ function toEvents(raw: unknown, what: string): CourtrackSetEvent[] {
     const next = entries[index + 1]!
     const score_a = next.tanteadorA ?? entry.tanteadorA ?? 0
     const score_b = next.tanteadorB ?? entry.tanteadorB ?? 0
-    let recorded = false
+    let pointRecorded = false
     for (const [side, evento] of [
       ['a', entry.eventoA],
       ['b', entry.eventoB],
     ] as const) {
       if (!evento) continue
-      recorded = true
-      const kind = EVENT_KINDS[evento.tipo ?? ''] ?? 'other'
+      const kind = eventKind(evento.tipo)
+      if (!NON_POINT_KINDS.has(kind)) pointRecorded = true
       const description = evento.descripcion?.trim() || null
-      events.push({
-        score_a,
-        score_b,
-        side,
-        kind,
-        player: kind === 'substitution' || kind === 'timeout' ? null : eventPlayer(description),
-        detail: kind === 'substitution' && description ? titleCase(description).replace(/\s*\|\s*/g, ' · ') : null,
-      })
+      const parsed: EventDescription =
+        kind === 'substitution'
+          ? { player: null, detail: description ? titleCase(description).replace(/\s*\|\s*/g, ' · ') : null }
+          : kind === 'timeout'
+            ? { player: null, detail: null }
+            : kind === 'sanction'
+              ? sanctionDescription(evento.titulo, description)
+              : parseEventDescription(description)
+      events.push({ score_a, score_b, side, kind, ...parsed })
     }
-    if (recorded) continue
-    // Punto sin acción registrada: se atribuye a quien sumó.
+    if (pointRecorded) continue
+    // Punto sin acción registrada (o con una sanción que lo concede): se atribuye a quien sumó.
     const gainedA = score_a > (entry.tanteadorA ?? 0)
     const gainedB = score_b > (entry.tanteadorB ?? 0)
     if (gainedA !== gainedB) {
