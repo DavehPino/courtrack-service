@@ -189,8 +189,9 @@ sincronizar cualquier organización: con el multitenant el token pasará a ser p
   `progresion` (`set1…setN`: cada entrada trae el marcador **antes** de la acción y `eventoA` o `eventoB` según el
   equipo que la protagoniza, con `tipo` puntoAtaque|puntoSaque|puntoBloqueo|errorSaque|error|tiempo|cambio|sanction:*
   y `descripcion`: "12-GRASSI" hasta el 2026-09-27; desde entonces con técnica y rival, "Punto Directo 1-ROJAS" o
-  "10-RODAS Fuerza Error
-de 50-VELASQUEZ FLORES"; la última entrada es el marcador final), `estadisticasJugador` (los dos equipos, con
+  `"10-RODAS Fuerza Error\r\nde 50-VELASQUEZ FLORES"`; la última entrada es el marcador final. El servicio separa
+  protagonista, técnica (`detail`) y rival (`opponent`: a quién se le forzó el error, de quién fue el bloqueo) y arma
+  el plantel de cada set, `roster_a/b`, con la formación y los cambios), `estadisticasJugador` (los dos equipos, con
   `tipo` "jugador,capitan"/"jugador,libero", `puntosDisputados` y el `AIScore` propio de CourtTrack), MVP, duración
   y horas reales. Los totales por jugador coinciden con los que se derivan de la progresión. Un id inexistente
   **cierra la conexión** sin respuesta.

@@ -10,6 +10,7 @@ import type {
   CourtrackCliente,
   CourtrackDiscoveredLiga,
   CourtrackEquipo,
+  CourtrackEventOpponentRelation,
   CourtrackLiga,
   CourtrackPartido,
   CourtrackPlayerStats,
@@ -17,6 +18,7 @@ import type {
   CourtrackSetEvent,
   CourtrackSetEventKind,
   CourtrackSetLineupPlayer,
+  CourtrackSetRosterPlayer,
   CourtrackStatLine,
 } from './types.js'
 
@@ -396,27 +398,35 @@ function formattedTime(value: string | null | undefined): string | null {
  */
 const PLAYER_REF = /(\d+)\s*-\s*((?:[\p{Lu}'.-]+(?:\s+|$))+)/gu
 
-type EventDescription = Pick<CourtrackSetEvent, 'player' | 'detail'>
+type EventDescription = Pick<CourtrackSetEvent, 'player' | 'detail' | 'opponent'>
+
+/** Texto entre el protagonista y el rival ("fuerza error de") → relación. */
+const OPPONENT_RELATIONS: [RegExp, CourtrackEventOpponentRelation][] = [
+  [/fuerza error/, 'forced_error'],
+  [/usa bloqueo/, 'used_block'],
+  [/del ataque/, 'blocked'],
+]
 
 /**
  * Descripción de una acción de la progresión. Hasta septiembre de 2026 era solo el jugador ("12-GRASSI"); desde el
  * 2026-09-27 trae además la técnica y, a veces, al rival involucrado:
  *   "Punto Directo 1-ROJAS", "Ataque a la Red 13-ROMERO", "Afuera 86-SUAREZ"      → técnica + jugador
  *   "10-RODAS Fuerza Error\r\nde 50-VELASQUEZ FLORES", "6-REYNOSO Del Ataque\r\nde 14-TORRES" → jugador + relación + rival
- * El protagonista es siempre el primer jugador citado; el resto del texto queda en `detail`, con los rivales como "#50 Velasquez Flores".
+ * El protagonista es siempre el primer jugador citado; el resto del texto queda en `detail`, con los rivales como
+ * "#50 Velasquez Flores", y el primer rival citado va además a `opponent` con su relación.
  */
 export function parseEventDescription(description: string | null): EventDescription {
   const clean = description?.replace(/\s+/g, ' ').trim()
-  if (!clean) return { player: null, detail: null }
+  if (!clean) return { player: null, detail: null, opponent: null }
 
   const refs = [...clean.matchAll(PLAYER_REF)]
   if (refs.length === 0) {
     const legacy = clean.match(/^(\d+)\s*-\s*(.+)$/)
-    if (legacy) return { player: { number: Number(legacy[1]), name: titleCase(legacy[2]!) }, detail: null }
+    if (legacy) return { player: { number: Number(legacy[1]), name: titleCase(legacy[2]!) }, detail: null, opponent: null }
     // Sin dorsal: si está en mayúsculas es un nombre; si no, es la técnica sin jugador.
     return clean === clean.toLocaleUpperCase('es')
-      ? { player: { number: null, name: titleCase(clean) }, detail: null }
-      : { player: null, detail: sentenceCase(clean.toLocaleLowerCase('es')) }
+      ? { player: { number: null, name: titleCase(clean) }, detail: null, opponent: null }
+      : { player: null, detail: sentenceCase(clean.toLocaleLowerCase('es')), opponent: null }
   }
 
   const actor = refs[0]!
@@ -430,7 +440,19 @@ export function parseEventDescription(description: string | null): EventDescript
   parts.push(clean.slice(cursor).toLocaleLowerCase('es'))
   const detail = parts.join('').replace(/\s+/g, ' ').trim()
 
-  return { player: { number: Number(actor[1]), name: titleCase(actor[2]!) }, detail: detail ? sentenceCase(detail) : null }
+  const rival = refs[1]
+  const link = rival ? clean.slice(actor.index + actor[0].length, rival.index).toLocaleLowerCase('es') : ''
+  return {
+    player: { number: Number(actor[1]), name: titleCase(actor[2]!) },
+    detail: detail ? sentenceCase(detail) : null,
+    opponent: rival
+      ? {
+          number: Number(rival[1]),
+          name: titleCase(rival[2]!),
+          relation: OPPONENT_RELATIONS.find(([pattern]) => pattern.test(link))?.[1] ?? 'other',
+        }
+      : null,
+  }
 }
 
 /** Sanción: titulo "TARJETA VERDE" y descripcion "#1 ALONSO" (vacía en las advertencias por demora; "#0 " sin nombre). */
@@ -440,6 +462,7 @@ function sanctionDescription(titulo: string | null | undefined, description: str
   return {
     player: match && name ? { number: Number(match[1]), name: titleCase(name) } : null,
     detail: titulo?.trim() ? sentenceCase(titulo.trim().toLocaleLowerCase('es')) : null,
+    opponent: null,
   }
 }
 
@@ -505,9 +528,9 @@ function toEvents(raw: unknown, what: string): CourtrackSetEvent[] {
       const description = evento.descripcion?.trim() || null
       const parsed: EventDescription =
         kind === 'substitution'
-          ? { player: null, detail: description ? titleCase(description).replace(/\s*\|\s*/g, ' · ') : null }
+          ? { player: null, detail: description ? titleCase(description).replace(/\s*\|\s*/g, ' · ') : null, opponent: null }
           : kind === 'timeout'
-            ? { player: null, detail: null }
+            ? { player: null, detail: null, opponent: null }
             : kind === 'sanction'
               ? sanctionDescription(evento.titulo, description)
               : parseEventDescription(description)
@@ -518,10 +541,41 @@ function toEvents(raw: unknown, what: string): CourtrackSetEvent[] {
     const gainedA = score_a > (entry.tanteadorA ?? 0)
     const gainedB = score_b > (entry.tanteadorB ?? 0)
     if (gainedA !== gainedB) {
-      events.push({ score_a, score_b, side: gainedA ? 'a' : 'b', kind: 'other', player: null, detail: null })
+      events.push({ score_a, score_b, side: gainedA ? 'a' : 'b', kind: 'other', player: null, detail: null, opponent: null })
     }
   }
   return events
+}
+
+/**
+ * Quiénes estuvieron en cancha en el set por un lado: la formación inicial (con los líberos, zona 0) y los que
+ * entraron por cambio ("Entra #14 Torres · Sale #2 Fondevila"). Los nombres salen de las estadísticas del partido.
+ */
+function toRoster(
+  lineup: CourtrackSetLineupPlayer[],
+  events: CourtrackSetEvent[],
+  side: Side,
+  players: CourtrackPlayerStats[],
+): CourtrackSetRosterPlayer[] {
+  const roster = new Map<string, CourtrackSetRosterPlayer>()
+  const add = (number: number | null, fallbackName: string, starter: boolean, libero: boolean) => {
+    const key = number === null ? `name:${fallbackName}` : String(number)
+    if (roster.has(key)) return
+    const stats = number === null ? undefined : players.find((player) => player.number === number)
+    roster.set(key, {
+      number,
+      name: stats?.short_name ?? fallbackName,
+      libero: libero || stats?.libero === true,
+      starter,
+    })
+  }
+  for (const player of lineup) add(player.number, player.short_name, true, player.position === 0)
+  for (const event of events) {
+    if (event.kind !== 'substitution' || event.side !== side) continue
+    const entering = event.detail?.match(/^Entra #(\d+)\s*([^·]*)/)
+    if (entering) add(Number(entering[1]), entering[2]!.trim(), false, false)
+  }
+  return [...roster.values()]
 }
 
 function toPlayerStats(raw: unknown[] | null | undefined): CourtrackPlayerStats[] {
@@ -557,23 +611,33 @@ export async function getDetallePartido(id: number): Promise<CourtrackPartido> {
 
   const stats = detalle.estadisticas ?? {}
   const progresion = detalle.progresion ?? {}
+  const players = toPlayerStats(detalle.estadisticasJugador)
+  const teamPlayers = (side: Side) =>
+    players.filter((player) => player.team === (side === 'a' ? detalle.id_equipo_a : detalle.id_equipo_b))
   const sets: CourtrackSet[] = parseEach(setSchema, detalle.sets ?? [], 'getDetallePartido.sets')
     .sort((a, b) => a.set - b.set)
-    .map((set) => ({
-      number: set.set,
-      score_a: set.tanteadorA ?? 0,
-      score_b: set.tanteadorB ?? 0,
-      duration_minutes: set.duracion,
-      timeouts_a: set.tiemposA ?? 0,
-      timeouts_b: set.tiemposB ?? 0,
-      substitutions_a: set.cambiosA ?? 0,
-      substitutions_b: set.cambiosB ?? 0,
-      stats_a: toStatLine(stats[`set${set.set}`], 'A'),
-      stats_b: toStatLine(stats[`set${set.set}`], 'B'),
-      lineup_a: toLineup(set.formacionA, `getDetallePartido.sets[${set.set}].formacionA`),
-      lineup_b: toLineup(set.formacionB, `getDetallePartido.sets[${set.set}].formacionB`),
-      events: toEvents(progresion[`set${set.set}`], `getDetallePartido.progresion.set${set.set}`),
-    }))
+    .map((set) => {
+      const lineup_a = toLineup(set.formacionA, `getDetallePartido.sets[${set.set}].formacionA`)
+      const lineup_b = toLineup(set.formacionB, `getDetallePartido.sets[${set.set}].formacionB`)
+      const events = toEvents(progresion[`set${set.set}`], `getDetallePartido.progresion.set${set.set}`)
+      return {
+        number: set.set,
+        score_a: set.tanteadorA ?? 0,
+        score_b: set.tanteadorB ?? 0,
+        duration_minutes: set.duracion,
+        timeouts_a: set.tiemposA ?? 0,
+        timeouts_b: set.tiemposB ?? 0,
+        substitutions_a: set.cambiosA ?? 0,
+        substitutions_b: set.cambiosB ?? 0,
+        stats_a: toStatLine(stats[`set${set.set}`], 'A'),
+        stats_b: toStatLine(stats[`set${set.set}`], 'B'),
+        lineup_a,
+        lineup_b,
+        roster_a: toRoster(lineup_a, events, 'a', teamPlayers('a')),
+        roster_b: toRoster(lineup_b, events, 'b', teamPlayers('b')),
+        events,
+      }
+    })
 
   const mvpName = detalle.mvp_nombre?.trim()
   return {
@@ -590,6 +654,10 @@ export async function getDetallePartido(id: number): Promise<CourtrackPartido> {
     sets,
     totals_a: toStatLine(stats.total, 'A'),
     totals_b: toStatLine(stats.total, 'B'),
-    players: toPlayerStats(detalle.estadisticasJugador),
+    players,
+    // Antes del 2026-09-27 las acciones de punto no traían técnica: `detail` solo existía en cambios y sanciones.
+    play_detail: sets.some((set) =>
+      set.events.some((event) => event.opponent || (event.detail !== null && event.player && !NON_POINT_KINDS.has(event.kind))),
+    ),
   }
 }

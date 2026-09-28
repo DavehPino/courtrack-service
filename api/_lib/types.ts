@@ -175,6 +175,15 @@ export type CourtrackSetEventKind =
   | 'sanction'
   | 'other'
 
+/**
+ * Cómo participa el rival citado en la acción (desde el 2026-09-27):
+ * - `forced_error`: "10-RODAS Fuerza Error de 50-VELASQUEZ": el ataque o el saque le forzó el error;
+ * - `used_block`: "22-MANRIQUE Usa Bloqueo de 21-SOTTO": el ataque salió del bloqueo de ese jugador;
+ * - `blocked`: "6-REYNOSO Del Ataque de 14-TORRES": el bloqueo frenó el ataque de ese jugador;
+ * - `other`: una relación que todavía no conocemos.
+ */
+export type CourtrackEventOpponentRelation = 'forced_error' | 'used_block' | 'blocked' | 'other'
+
 /** Un paso de la progresión de un set: quién hizo qué y cómo quedó el marcador. */
 export type CourtrackSetEvent = {
   /** Marcador después del evento. */
@@ -190,6 +199,18 @@ export type CourtrackSetEvent = {
    * una sustitución ("Entra #27 Carrion · Sale #17 Rios"). Null si CourtTrack no la da (partidos anteriores al 2026-09-27).
    */
   detail: string | null
+  /** Jugador del OTRO equipo citado en la acción. Null si no hay (o en partidos anteriores al 2026-09-27). */
+  opponent?: { number: number | null; name: string; relation: CourtrackEventOpponentRelation } | null
+}
+
+/** Jugador que estuvo en cancha en un set: formación inicial (líberos incluidos) y los que entraron por cambio. */
+export type CourtrackSetRosterPlayer = {
+  number: number | null
+  /** Apellido abreviado de CourtTrack ("Velasquez F"), el mismo de las estadísticas del partido. */
+  name: string
+  libero: boolean
+  /** En la formación inicial; false si entró por un cambio. */
+  starter: boolean
 }
 
 /** Jugador en la formación inicial de un set. `position` 1–6 es la zona de la rotación; 0, líbero. */
@@ -215,6 +236,8 @@ export type CourtrackSet = {
   stats_b: CourtrackStatLine | null
   lineup_a: CourtrackSetLineupPlayer[]
   lineup_b: CourtrackSetLineupPlayer[]
+  roster_a?: CourtrackSetRosterPlayer[]
+  roster_b?: CourtrackSetRosterPlayer[]
   events: CourtrackSetEvent[]
 }
 
@@ -257,4 +280,9 @@ export type CourtrackPartido = {
   totals_a: CourtrackStatLine | null
   totals_b: CourtrackStatLine | null
   players: CourtrackPlayerStats[]
+  /**
+   * CourtTrack registra la técnica y el rival de cada acción (formato desde el 2026-09-27): solo entonces se sabe a
+   * quién le forzaron el error. En los partidos anteriores `opponent` no existe y los errores forzados son desconocidos.
+   */
+  play_detail?: boolean
 }

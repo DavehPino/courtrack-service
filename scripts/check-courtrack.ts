@@ -8,6 +8,8 @@
 //   3. cada acción de la progresión tiene jugador con dorsal (el parser de descripciones entiende el formato)
 //   4. las acciones por jugador sacadas de la progresión = los totales oficiales de estadisticasJugador
 //   5. los puntos de la progresión de cada set = su marcador final
+//   6. todo jugador con acciones en un set está en el plantel de ese set (roster: formación + cambios)
+//   7. el rival de un error forzado es un jugador del otro equipo
 import { env } from '../api/_lib/env.js'
 import { HttpError } from '../api/_lib/http.js'
 import { findPartidos, getDetallePartido, getLiga } from '../api/_lib/courtrack.js'
@@ -75,6 +77,17 @@ function checkParsed(p: CourtrackPartido) {
         fail(`partido ${p.id} set ${set.number}: ${event.kind} sin jugador reconocible (${JSON.stringify(event)})`)
         continue
       }
+      const roster = event.side === 'a' ? set.roster_a : set.roster_b
+      if (!roster?.some((player) => player.number === event.player!.number)) {
+        fail(`partido ${p.id} set ${set.number}: #${event.player.number} ${event.player.name} tiene acciones pero no está en el plantel del set`)
+      }
+      if (event.opponent?.relation === 'forced_error') {
+        const rivalTeam = event.side === 'a' ? p.team_b : p.team_a
+        if (!p.players.some((player) => player.team === rivalTeam && player.number === event.opponent!.number)) {
+          fail(`partido ${p.id} set ${set.number}: error forzado a #${event.opponent.number} ${event.opponent.name}, que no juega en ${rivalTeam}`)
+        }
+      }
+      if (event.opponent?.relation === 'other') warn(`partido ${p.id}: relación con el rival desconocida en "${event.detail}"`)
       const key = `${event.side === 'a' ? p.team_a : p.team_b}#${event.player.number}`
       const line = counts.get(key) ?? {}
       line[stat] = (line[stat] ?? 0) + 1
