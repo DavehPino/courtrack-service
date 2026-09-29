@@ -17,3 +17,12 @@ export function requireSecret(request: Request): void {
   if (given && timingSafeEqual(digest(given), digest(expected))) return
   throw unauthorized('Token inválido')
 }
+
+/** Cron de Vercel (`CRON_SECRET`) o llamada manual con el token del servicio (`SYNC_SECRET`). */
+export function requireCronOrSecret(request: Request): void {
+  const header = request.headers.get('authorization') ?? ''
+  const given = header.startsWith('Bearer ') ? header.slice('Bearer '.length).trim() : ''
+  const cron = env.cronSecret
+  if (given && cron && timingSafeEqual(digest(given), digest(cron))) return
+  requireSecret(request)
+}

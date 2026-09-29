@@ -6,6 +6,11 @@ como nombres de jugador). Este documento es el procedimiento para que cualquier 
 lo repare en los tres repos y lo deje verificado. En Claude Code se lanza con **`/courtrack-repair`**
 (`.claude/skills/courtrack-repair/SKILL.md`), opcionalmente con el síntoma: `/courtrack-repair el partido de hoy muestra X`.
 
+## Vigilancia automática (viernes)
+
+El chequeo corre solo cada viernes 12:00 UTC (`api/cron/contract-check.ts`, Vercel Cron). Si falla, llega un email con las
+fallas: entonces lanzar `/courtrack-repair` y seguir el procedimiento. Detalle y variables en el README (§5).
+
 ## Dónde vive cada cosa
 
 | Repo | Qué toca de CourtTrack |

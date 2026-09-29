@@ -136,3 +136,15 @@ export async function storedCourtrackIds(leagueId: string): Promise<Set<string>>
   if (error) throw error
   return new Set(data.map((row) => row.courtrack_id as string))
 }
+
+/** Ligas distintas (asociación + liga) de todas las temporadas abiertas y activas, de cualquier organización. */
+export async function listActiveLeagueTargets(): Promise<{ idCliente: number; ligaId: number }[]> {
+  const { data, error } = await db()
+    .from('courtrack_leagues')
+    .select('id_cliente,liga_id')
+    .eq('is_active', true)
+    .is('archived_at', null)
+  if (error) throw error
+  const unique = new Map(data.map((row) => [`${row.id_cliente}:${row.liga_id}`, { idCliente: row.id_cliente, ligaId: row.liga_id }]))
+  return [...unique.values()]
+}

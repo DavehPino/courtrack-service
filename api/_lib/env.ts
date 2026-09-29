@@ -36,6 +36,22 @@ export const env = {
   get dailyLimit() {
     return integer('SYNC_DAILY_LIMIT', 3)
   },
+  /** Secreto que Vercel Cron envía como `Authorization: Bearer`. Sin él, el cron solo acepta SYNC_SECRET. */
+  get cronSecret() {
+    return optional('CRON_SECRET')
+  },
+  /** Clave de Resend (https://resend.com) para el aviso por email cuando el contrato falla. Opcional. */
+  get resendApiKey() {
+    return optional('RESEND_API_KEY')
+  },
+  /** Destinatario(s) del aviso, separados por coma. */
+  get alertEmailTo() {
+    return optional('ALERT_EMAIL_TO')
+  },
+  /** Remitente del aviso. Con `onboarding@resend.dev` (prueba) Resend solo entrega al dueño de la cuenta. */
+  get alertEmailFrom() {
+    return optional('ALERT_EMAIL_FROM') ?? 'CourtTrack Service <onboarding@resend.dev>'
+  },
   get courtrackBaseUrl() {
     return (optional('COURTRACK_BASE_URL') ?? 'https://api.courtrack.com').replace(/\/+$/, '')
   },

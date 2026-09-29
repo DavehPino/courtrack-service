@@ -9,6 +9,9 @@
     },
     "api/courtrack/[resource].ts": {
       "maxDuration": 60
+    },
+    "api/cron/contract-check.ts": {
+      "maxDuration": 60
     }
   },
   "headers": [
@@ -20,6 +23,12 @@
           "value": "noindex, nofollow"
         }
       ]
+    }
+  ],
+  "crons": [
+    {
+      "path": "/api/cron/contract-check",
+      "schedule": "0 12 * * 5"
     }
   ]
 }

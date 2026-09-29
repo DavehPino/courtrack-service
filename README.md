@@ -83,6 +83,8 @@ cp .env.example .env          # y rellena los valores
 | `SYNC_SECRET` | Token que exigen `/api/sync` y `/api/courtrack/*`. El mismo valor va en `COURTRACK_SYNC_SECRET` del dashboard |
 | `SYNC_DAILY_LIMIT` | Cupo de syncs reales por organización en 24 h (5) |
 | `COURTRACK_BASE_URL` | Opcional, `https://api.courtrack.com` |
+| `CRON_SECRET` | Token con el que Vercel Cron llama a `/api/cron/contract-check` (chequeo semanal, ver más abajo) |
+| `RESEND_API_KEY` · `ALERT_EMAIL_TO` · `ALERT_EMAIL_FROM` | Opcionales: aviso por email (Resend) cuando el contrato falla |
 
 La liga, el equipo propio y la competición **no** son variables: se configuran en el dashboard (Partidos → Ligas).
 
@@ -105,6 +107,14 @@ npm run dev                               # vercel dev en el puerto 3100 (el das
 
 Proyecto sin framework. Carga las variables de `.env` en Settings → Environment Variables. En el proyecto del
 dashboard, `COURTRACK_SYNC_URL=https://<este-deploy>.vercel.app` y `COURTRACK_SYNC_SECRET=<SYNC_SECRET>`.
+
+### 5. Vigilancia semanal del contrato
+
+Cada **viernes 12:00 UTC** Vercel Cron llama a `GET /api/cron/contract-check`: revisa los últimos 4 partidos jugados de cada
+liga activa (mismo chequeo que `npm run check:courtrack`, sin LLM). Responde el informe (`ok`, `failures`, `warnings`) y lo deja
+en los logs de la función. Si falla y hay `RESEND_API_KEY` + `ALERT_EMAIL_TO`, envía un email con las fallas; la reparación la
+lanzas tú con `/courtrack-repair`. Prueba manual: `curl -H "Authorization: Bearer $SYNC_SECRET"
+"https://<deploy>/api/cron/contract-check?notify=0"` (`notify=0` no envía el email).
 
 ## API
 
