@@ -347,7 +347,11 @@ export async function getSyncStatus(org: Org): Promise<SyncStatus> {
   return {
     org_id: org.slug,
     quota,
-    leagues: leagues.map(({ org_id: _org, ...league }) => ({ ...league, last_sync: lastByLeague.get(league.id) ?? null })),
+    // La respuesta no expone la organización de cada liga (ya va en `org_id`): ni el slug ni el uuid interno.
+    leagues: leagues.map(({ org_id: _slug, organization_id: _id, ...league }) => ({
+      ...league,
+      last_sync: lastByLeague.get(league.id) ?? null,
+    })),
     last_syncs: last,
   }
 }
