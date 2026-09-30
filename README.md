@@ -4,7 +4,8 @@ Microservicio que trae los **resultados de las ligas de CourtTrack** (la app de 
 de datos del dashboard. Es un proyecto aparte de [`coyotes-website`](https://github.com/DavehPino/coyotes-website)
 (otro deploy en Vercel) que escribe en la **misma instancia de Supabase**.
 
-- **Multi-liga:** cada organización (`org_id`; hoy solo `coyotes`) configura desde el dashboard las ligas de CourtTrack
+- **Multi-liga y multi-organización:** cada organización (`org_id` en la API = `organizations.slug`; todos los datos se
+  aíslan por su id uuid) configura desde el dashboard las ligas de CourtTrack
   en las que juega (tabla `courtrack_leagues`), cada una colgada de una competición del dashboard (`competitions`).
   El dashboard puede **descubrirlas** (`/api/courtrack/descubrir`): ligas de una asociación donde aparece el equipo.
 - **Temporadas e histórico:** CourtTrack resetea las ligas al terminar. Cada fila de `courtrack_leagues` es una
@@ -67,7 +68,7 @@ Dashboard (Partidos → Sincronizar)
 
 ### 1. Base de datos
 
-El esquema vive en el repo del dashboard (`coyotes-website/supabase/migrations`): `matches.courtrack_id`, `sync_log`,
+El esquema vive en teamhub-api (`supabase/migrations`): `matches.courtrack_id`, `sync_log`,
 `competitions`, `courtrack_leagues`, `courtrack_team_links`. Tras cada migración, en el dashboard `npm run db:types` y
 aquí actualizar a mano el subconjunto `api/_lib/database.types.ts`.
 
@@ -98,7 +99,8 @@ npm run sync:dry                          # vista previa de todas las ligas acti
 npm run sync                              # sincroniza todas las activas (un cupo)
 npm run sync -- --league <uuid>           # solo esa temporada (también con --dry-run)
 npm run sync -- --force                   # ignora el cupo (el intento se registra igual)
-npm run sync -- --json                    # salida JSON completa · --org <id> (default coyotes)
+npm run sync -- --json                    # salida JSON completa
+#   todos los comandos de sync exigen --org <slug> (p. ej. --org coyotes); no hay organización por defecto
 npm run check:courtrack                   # chequeo de contrato contra CourtTrack (--partido <ids> · --liga · --last)
 npm run dev                               # vercel dev en el puerto 3100 (el dashboard usa el 3000)
 ```
@@ -173,14 +175,19 @@ el histórico, cada fila de `courtrack_leagues` es una **temporada** y el sync:
 
 Cada sync real inserta una fila **antes** de empezar (`status = running`; `courtrack_league_id` de la temporada, o
 null si fue un sync de todas las activas, cuyo `result.leagues` trae el resumen por liga) y cuenta las filas
-`running | success | error` de su `org_id` en las últimas 24 h: si superan `SYNC_DAILY_LIMIT`, la fila pasa a
+`running | success | error` de su organización en las últimas 24 h: si superan su cupo, la fila pasa a
 `rejected` (no consume cupo) y se responde 429. Las vistas previas no se registran ni cuentan.
 
 ### Seguridad
 
-El token es único y compartido con el backend del dashboard (nunca llega al navegador). Como `org_id` viaja en la
-petición, el servicio comprueba que la liga pertenece a esa organización, pero cualquier poseedor del token puede
-sincronizar cualquier organización: con el multitenant el token pasará a ser por organización.
+El token es único y lo tiene solo el backend del dashboard (teamhub-api, nunca llega al navegador). Ese backend
+autentica al usuario en su organización y es quien fija `org_id` en cada llamada, así que el servicio confía en él: un
+poseedor del token puede sincronizar cualquier organización. Por eso el servicio no está pensado para que los clubes lo
+llamen directamente; si algún día lo hicieran, habría que pasar a un token por organización.
+
+El servicio comprueba que `org_id` corresponde a una organización existente (404 `org_not_found`: un slug inventado no
+crea datos ni consume cupo) y que la liga pedida pertenece a esa organización. Todas las consultas a `teams`, `matches`,
+`courtrack_leagues`, `courtrack_team_links` y `sync_log` filtran por el id de la organización.
 
 ## Contrato de CourtTrack (verificado)
 

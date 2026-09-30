@@ -3,9 +3,11 @@
 //   npm run sync:dry                             vista previa de TODAS las ligas activas (no escribe ni gasta cupo)
 //   npm run sync                                 sincroniza todas las activas (un cupo)
 //   npm run sync -- --league <uuid>              solo esa temporada
-//   --org <id> (default coyotes) · --force (ignora el cupo) · --json (salida completa)
+//   --org <slug> OBLIGATORIO (organizations.slug) · --force (ignora el cupo) · --json (salida completa)
 import { HttpError } from '../api/_lib/http.js'
+import { resolveOrg } from '../api/_lib/orgs.js'
 import { getSyncStatus, runSync, runSyncAll } from '../api/_lib/sync.js'
+import type { Org } from '../api/_lib/orgs.js'
 import type { SyncMatchReport, SyncResult } from '../api/_lib/types.js'
 
 const argv = process.argv.slice(2)
@@ -15,7 +17,7 @@ const option = (name: string): string | undefined => {
   return index >= 0 ? argv[index + 1] : undefined
 }
 
-const orgId = option('--org') ?? 'coyotes'
+const orgSlug = option('--org')
 const leagueId = option('--league')
 const dryRun = flag('--dry-run')
 const force = flag('--force')
@@ -58,8 +60,8 @@ function printLeague(result: Omit<SyncResult, 'quota'>): void {
   if (result.rivals_created.length > 0) console.log(`  Rivales ${dryRun ? 'a crear' : 'creados'}: ${result.rivals_created.join(', ')}`)
 }
 
-async function list(): Promise<void> {
-  const status = await getSyncStatus(orgId)
+async function list(org: Org): Promise<void> {
+  const status = await getSyncStatus(org)
   if (asJson) {
     console.log(JSON.stringify(status, null, 2))
     return
@@ -79,9 +81,14 @@ async function list(): Promise<void> {
 }
 
 async function main(): Promise<void> {
-  if (flag('--list')) return list()
+  if (!orgSlug) {
+    console.error('✖ Falta --org <slug>: indica la organización (p. ej. --org coyotes).')
+    process.exit(1)
+  }
+  const org = await resolveOrg(orgSlug)
+  if (flag('--list')) return list(org)
   if (leagueId) {
-    const result = await runSync({ orgId, leagueId, dryRun, skipQuota: force })
+    const result = await runSync({ org, leagueId, dryRun, skipQuota: force })
     if (asJson) console.log(JSON.stringify(result, null, 2))
     else {
       printLeague(result)
@@ -89,7 +96,7 @@ async function main(): Promise<void> {
     }
     return
   }
-  const result = await runSyncAll({ orgId, dryRun, skipQuota: force })
+  const result = await runSyncAll({ org, dryRun, skipQuota: force })
   if (asJson) console.log(JSON.stringify(result, null, 2))
   else {
     for (const league of result.leagues) printLeague(league)

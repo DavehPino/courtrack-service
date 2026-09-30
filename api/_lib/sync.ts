@@ -11,7 +11,6 @@ import {
   type Side,
 } from './courtrack.js'
 import type { Json } from './database.types.js'
-import { env } from './env.js'
 import { HttpError } from './http.js'
 import {
   archiveLeague,
@@ -25,13 +24,14 @@ import {
   type League,
 } from './leagues.js'
 import { findByCourtrackIds, findManualMatch, insertMatch, isUnchanged, updateMatch, type MatchRow, type MatchValues } from './matches.js'
+import type { Org } from './orgs.js'
 import { beginSync, finishSync, getQuota, lastSyncs } from './syncLog.js'
 import { RivalResolver } from './teams.js'
 import { addDays, horarioToTime, matchSlugBase, sameName, tallySets, titleCase, todayIsoDate } from './text.js'
 import type { SeasonEvent, SyncAllResult, SyncLogEntry, SyncMatchReport, SyncResult, SyncStatus, SyncSummary } from './types.js'
 
 export type SyncOptions = {
-  orgId: string
+  org: Org
   /** Liga (courtrack_leagues.id). Sin ella se recorren todas las activas de la organización. */
   leagueId?: string
   /** Calcula y devuelve qué haría sin escribir nada (ni partidos, ni rivales, ni vínculos, ni sync_log). */
@@ -44,7 +44,14 @@ const LAST_SYNCS = 30
 
 type LeagueResult = Omit<SyncResult, 'quota'>
 
-type Context = { league: League; resolver: RivalResolver; existing: Map<string, MatchRow>; dryRun: boolean; today: string }
+type Context = {
+  org: Org
+  league: League
+  resolver: RivalResolver
+  existing: Map<string, MatchRow>
+  dryRun: boolean
+  today: string
+}
 
 const cleanText = (value: string | null | undefined) => value?.trim() || null
 
@@ -107,17 +114,17 @@ async function importPartido(partido: Partido, ours: Side, ctx: Context): Promis
   // Un rival recién creado no puede tener partidos manuales.
   const existing =
     ctx.existing.get(report.courtrack_id) ??
-    (rival.created ? null : await findManualMatch(values.played_on, values.opponent_team_id, values.competition_id))
+    (rival.created ? null : await findManualMatch(ctx.org, values.played_on, values.opponent_team_id, values.competition_id))
 
   if (existing) {
     report.slug = existing.slug
     report.action = existing.courtrack_id === null ? 'adopted' : isUnchanged(existing, values) ? 'unchanged' : 'updated'
-    if (report.action !== 'unchanged' && !ctx.dryRun) await updateMatch(existing.id, values)
+    if (report.action !== 'unchanged' && !ctx.dryRun) await updateMatch(ctx.org, existing.id, values)
     return report
   }
 
   report.action = 'created'
-  report.slug = ctx.dryRun ? matchSlugBase(values.played_on, rival.team.name) : (await insertMatch(values, rival.team.name)).slug
+  report.slug = ctx.dryRun ? matchSlugBase(values.played_on, rival.team.name) : (await insertMatch(ctx.org, values, rival.team.name)).slug
   return report
 }
 
@@ -158,7 +165,7 @@ async function detectReset(league: League, partidos: Partido[]): Promise<boolean
 }
 
 /** Sincroniza una temporada. `resolver` se comparte entre ligas para no resolver el mismo rival dos veces. */
-async function syncLeague(initial: League, dryRun: boolean, resolver: RivalResolver): Promise<LeagueResult> {
+async function syncLeague(org: Org, initial: League, dryRun: boolean, resolver: RivalResolver): Promise<LeagueResult> {
   let league = initial
   let seasonEvent: SeasonEvent | undefined
 
@@ -195,10 +202,11 @@ async function syncLeague(initial: League, dryRun: boolean, resolver: RivalResol
     .sort((x, y) => x.partido.fecha.localeCompare(y.partido.fecha) || x.partido.id - y.partido.id)
 
   const ctx: Context = {
+    org,
     league,
     resolver,
     // Tras un reseteo simulado (dry run) los partidos viejos no cuentan: en la temporada nueva serían altas.
-    existing: seasonEvent && dryRun ? new Map() : await findByCourtrackIds(own.map(({ partido }) => String(partido.id))),
+    existing: seasonEvent && dryRun ? new Map() : await findByCourtrackIds(org, own.map(({ partido }) => String(partido.id))),
     dryRun,
     today: todayIsoDate(),
   }
@@ -233,21 +241,21 @@ async function syncLeague(initial: League, dryRun: boolean, resolver: RivalResol
 
 /** Registra el intento, comprueba el cupo, ejecuta y cierra el registro con el resumen. */
 async function withQuota<T>(
-  orgId: string,
+  org: Org,
   leagueId: string | null,
   { dryRun, skipQuota }: { dryRun: boolean; skipQuota: boolean },
   run: () => Promise<{ value: T; summary: SyncSummary; leagues?: Record<string, SyncSummary> }>,
 ): Promise<T> {
-  const limit = env.dailyLimit
+  const limit = org.dailyLimit
   let logId: string | null = null
   if (!dryRun) {
-    logId = await beginSync(orgId, leagueId)
+    logId = await beginSync(org, leagueId)
     if (!skipQuota) {
       // La cuenta incluye este intento (ya está en `running`): con el cupo agotado supera el límite.
-      const quota = await getQuota(orgId, limit)
+      const quota = await getQuota(org)
       if (quota.used > limit) {
         await finishSync(logId, 'rejected', null, 'Cupo diario agotado')
-        const current = await getQuota(orgId, limit)
+        const current = await getQuota(org)
         throw new HttpError(429, 'quota_exceeded', `Ya se hicieron ${limit} sincronizaciones en las últimas 24 horas.`, {
           quota: current,
         })
@@ -295,27 +303,27 @@ const pickSummary = (result: LeagueResult): SyncSummary => ({
 })
 
 /** Sincroniza UNA temporada (404 si no es de la org, 409 si está pausada o archivada). */
-export async function runSync({ orgId, leagueId, dryRun, skipQuota = false }: SyncOptions & { leagueId: string }): Promise<SyncResult> {
-  const league = await getLeague(orgId, leagueId)
+export async function runSync({ org, leagueId, dryRun, skipQuota = false }: SyncOptions & { leagueId: string }): Promise<SyncResult> {
+  const league = await getLeague(org, leagueId)
   if (league.archived_at) throw new HttpError(409, 'league_archived', `La temporada "${league.season_label}" ya está archivada`)
   if (!league.is_active) throw new HttpError(409, 'league_inactive', `La liga "${league.liga_name}" está pausada`)
 
-  const result = await withQuota(orgId, league.id, { dryRun, skipQuota }, async () => {
-    const value = await syncLeague(league, dryRun, await RivalResolver.load({ orgId, dryRun }))
+  const result = await withQuota(org, league.id, { dryRun, skipQuota }, async () => {
+    const value = await syncLeague(org, league, dryRun, await RivalResolver.load({ org, dryRun }))
     return { value, summary: pickSummary(value) }
   })
-  return { ...result, quota: await getQuota(orgId, env.dailyLimit) }
+  return { ...result, quota: await getQuota(org) }
 }
 
 /** Sincroniza TODAS las temporadas activas de la organización con un solo cupo. */
-export async function runSyncAll({ orgId, dryRun, skipQuota = false }: Omit<SyncOptions, 'leagueId'>): Promise<SyncAllResult> {
-  const leagues = await listActiveLeagues(orgId)
+export async function runSyncAll({ org, dryRun, skipQuota = false }: Omit<SyncOptions, 'leagueId'>): Promise<SyncAllResult> {
+  const leagues = await listActiveLeagues(org)
   if (leagues.length === 0) throw new HttpError(404, 'league_not_found', 'La organización no tiene ligas activas')
 
-  const results = await withQuota(orgId, null, { dryRun, skipQuota }, async () => {
-    const resolver = await RivalResolver.load({ orgId, dryRun })
+  const results = await withQuota(org, null, { dryRun, skipQuota }, async () => {
+    const resolver = await RivalResolver.load({ org, dryRun })
     const value: LeagueResult[] = []
-    for (const league of leagues) value.push(await syncLeague(league, dryRun, resolver))
+    for (const league of leagues) value.push(await syncLeague(org, league, dryRun, resolver))
     const perLeague = Object.fromEntries(value.map((item) => [item.league.id, pickSummary(item)]))
     return { value, summary: addSummaries(value.map(pickSummary)), leagues: perLeague }
   })
@@ -324,24 +332,20 @@ export async function runSyncAll({ orgId, dryRun, skipQuota = false }: Omit<Sync
     dry_run: dryRun,
     leagues: results,
     totals: addSummaries(results.map(pickSummary)),
-    quota: await getQuota(orgId, env.dailyLimit),
+    quota: await getQuota(org),
   }
 }
 
 /** Cupo restante, temporadas (abiertas y archivadas, con su último sync) y últimas ejecuciones de la organización. */
-export async function getSyncStatus(orgId: string): Promise<SyncStatus> {
-  const [quota, leagues, last] = await Promise.all([
-    getQuota(orgId, env.dailyLimit),
-    listLeagues(orgId),
-    lastSyncs(orgId, LAST_SYNCS),
-  ])
+export async function getSyncStatus(org: Org): Promise<SyncStatus> {
+  const [quota, leagues, last] = await Promise.all([getQuota(org), listLeagues(org), lastSyncs(org, LAST_SYNCS)])
   const lastByLeague = new Map<string, SyncLogEntry>()
   for (const entry of last) {
     const ids = entry.league_id ? [entry.league_id] : Object.keys(entry.leagues ?? {})
     for (const id of ids) if (!lastByLeague.has(id)) lastByLeague.set(id, entry)
   }
   return {
-    org_id: orgId,
+    org_id: org.slug,
     quota,
     leagues: leagues.map(({ org_id: _org, ...league }) => ({ ...league, last_sync: lastByLeague.get(league.id) ?? null })),
     last_syncs: last,

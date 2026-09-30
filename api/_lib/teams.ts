@@ -1,4 +1,5 @@
 // Rivales: une los nombres de CourtTrack con la tabla `teams` del dashboard y crea los que falten.
+import type { Org } from './orgs.js'
 import { db } from './supabase.js'
 import { sameName, shortNameFor, slugify, titleCase } from './text.js'
 
@@ -20,21 +21,24 @@ export type ResolvedRival = {
 }
 
 type ResolverOptions = {
-  orgId: string
+  org: Org
   /** No escribe: los rivales nuevos se anuncian con un id ficticio y no se crean vínculos. */
   dryRun: boolean
 }
 
 const TEAM_SELECT = 'id,name,short_name,logo_url,is_own_team'
 
-async function loadTeams(): Promise<TeamRow[]> {
-  const { data, error } = await db().from('teams').select(TEAM_SELECT)
+async function loadTeams(org: Org): Promise<TeamRow[]> {
+  const { data, error } = await db().from('teams').select(TEAM_SELECT).eq('org_id', org.id)
   if (error) throw error
   return data
 }
 
-async function loadLinks(orgId: string): Promise<LinkRow[]> {
-  const { data, error } = await db().from('courtrack_team_links').select('normalized_name,team_id').eq('org_id', orgId)
+async function loadLinks(org: Org): Promise<LinkRow[]> {
+  const { data, error } = await db()
+    .from('courtrack_team_links')
+    .select('normalized_name,team_id')
+    .eq('organization_id', org.id)
   if (error) throw error
   return data
 }
@@ -53,7 +57,7 @@ export class RivalResolver {
   ) {}
 
   static async load(options: ResolverOptions): Promise<RivalResolver> {
-    const [teams, links] = await Promise.all([loadTeams(), loadLinks(options.orgId)])
+    const [teams, links] = await Promise.all([loadTeams(options.org), loadLinks(options.org)])
     return new RivalResolver(teams, links, options)
   }
 
@@ -78,7 +82,13 @@ export class RivalResolver {
     const { error } = await db()
       .from('courtrack_team_links')
       .upsert(
-        { org_id: this.options.orgId, courtrack_name: courtrackName, normalized_name: normalized, team_id: teamId },
+        {
+          org_id: this.options.org.slug,
+          organization_id: this.options.org.id,
+          courtrack_name: courtrackName,
+          normalized_name: normalized,
+          team_id: teamId,
+        },
         { onConflict: 'org_id,normalized_name', ignoreDuplicates: true },
       )
     if (error) console.error(error)
@@ -111,12 +121,20 @@ export class RivalResolver {
 
     const { data, error } = await db()
       .from('teams')
-      .insert({ name, short_name: shortNameFor(name), logo_url: logo, is_own_team: false, category: null, city: null })
+      .insert({
+        org_id: this.options.org.id,
+        name,
+        short_name: shortNameFor(name),
+        logo_url: logo,
+        is_own_team: false,
+        category: null,
+        city: null,
+      })
       .select(TEAM_SELECT)
       .single()
     if (error?.code === UNIQUE_VIOLATION) {
       // Lo creó otra ejecución (o existe con otra grafía que el índice único considera igual): se relee.
-      this.teams = await loadTeams()
+      this.teams = await loadTeams(this.options.org)
       const found = this.byName(courtrackName) ?? this.byName(name)
       if (found) {
         this.created.pop()
@@ -141,11 +159,11 @@ export class RivalResolver {
 
     const renamedFrom = changes.name ? team.name : undefined
     if (!this.options.dryRun) {
-      const { error } = await db().from('teams').update(changes).eq('id', team.id)
+      const { error } = await db().from('teams').update(changes).eq('id', team.id).eq('org_id', this.options.org.id)
       if (error?.code === UNIQUE_VIOLATION && changes.name) {
         console.error(`No se renombró "${team.name}" a "${name}": ya existe otro equipo con ese nombre`)
         delete changes.name
-        const { error: retryError } = await db().from('teams').update(changes).eq('id', team.id)
+        const { error: retryError } = await db().from('teams').update(changes).eq('id', team.id).eq('org_id', this.options.org.id)
         if (retryError) console.error(retryError)
         else Object.assign(team, changes)
         return base

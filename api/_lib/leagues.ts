@@ -3,11 +3,13 @@
 // resetea la liga, la archiva y abre la temporada siguiente.
 import type { Json } from './database.types.js'
 import { HttpError } from './http.js'
+import type { Org } from './orgs.js'
 import { db } from './supabase.js'
 
 export type League = {
   id: string
   org_id: string
+  organization_id: string
   competition: { id: string; name: string; kind: string }
   id_cliente: number
   cliente_name: string | null
@@ -25,7 +27,7 @@ export type League = {
 
 // Un único literal: el cliente de Supabase infiere el tipo del select solo desde literales, no desde concatenaciones.
 const SELECT =
-  'id,org_id,id_cliente,cliente_name,liga_id,liga_name,season_label,team_name,team_logo_url,is_active,last_synced_at,archived_at,archive_reason,snapshot_at,competition:competitions!courtrack_leagues_competition_id_fkey(id,name,kind)'
+  'id,org_id,organization_id,id_cliente,cliente_name,liga_id,liga_name,season_label,team_name,team_logo_url,is_active,last_synced_at,archived_at,archive_reason,snapshot_at,competition:competitions!courtrack_leagues_competition_id_fkey(id,name,kind)'
 
 type Row = Omit<League, 'competition' | 'archive_reason'> & {
   competition: League['competition'] | null
@@ -41,11 +43,11 @@ function toLeague(row: Row): League {
 }
 
 /** Todas las temporadas de la organización: abiertas primero (activas antes que pausadas), archivadas al final. */
-export async function listLeagues(orgId: string): Promise<League[]> {
+export async function listLeagues(org: Org): Promise<League[]> {
   const { data, error } = await db()
     .from('courtrack_leagues')
     .select(SELECT)
-    .eq('org_id', orgId)
+    .eq('organization_id', org.id)
     .order('archived_at', { ascending: false, nullsFirst: true })
     .order('is_active', { ascending: false })
     .order('created_at', { ascending: false })
@@ -54,15 +56,20 @@ export async function listLeagues(orgId: string): Promise<League[]> {
 }
 
 /** Temporadas abiertas y activas: las que recorre "Sincronizar todo". */
-export async function listActiveLeagues(orgId: string): Promise<League[]> {
-  return (await listLeagues(orgId)).filter((league) => league.is_active && !league.archived_at)
+export async function listActiveLeagues(org: Org): Promise<League[]> {
+  return (await listLeagues(org)).filter((league) => league.is_active && !league.archived_at)
 }
 
-/** 404 si no existe o pertenece a otra organización (el secreto es compartido: no se revela que exista). */
-export async function getLeague(orgId: string, leagueId: string): Promise<League> {
-  const { data, error } = await db().from('courtrack_leagues').select(SELECT).eq('id', leagueId).maybeSingle()
+/** 404 si no existe o pertenece a otra organización (no se revela que exista). */
+export async function getLeague(org: Org, leagueId: string): Promise<League> {
+  const { data, error } = await db()
+    .from('courtrack_leagues')
+    .select(SELECT)
+    .eq('id', leagueId)
+    .eq('organization_id', org.id)
+    .maybeSingle()
   if (error) throw error
-  if (!data || data.org_id !== orgId) throw new HttpError(404, 'league_not_found', 'La liga no existe')
+  if (!data) throw new HttpError(404, 'league_not_found', 'La liga no existe')
   return toLeague(data)
 }
 
@@ -110,6 +117,7 @@ export async function openNextSeason(previous: League, seasonLabel: string): Pro
     .from('courtrack_leagues')
     .insert({
       org_id: previous.org_id,
+      organization_id: previous.organization_id,
       competition_id: previous.competition.id,
       id_cliente: previous.id_cliente,
       cliente_name: previous.cliente_name,

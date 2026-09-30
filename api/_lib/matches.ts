@@ -1,5 +1,6 @@
 // Partidos en Supabase: búsqueda por id de CourtTrack, adopción de partidos manuales, alta y edición.
 import type { Json, Tables } from './database.types.js'
+import type { Org } from './orgs.js'
 import { db } from './supabase.js'
 import { matchSlugBase, type SetScore } from './text.js'
 
@@ -25,9 +26,9 @@ const UNIQUE_VIOLATION = '23505'
 const SLUG_ATTEMPTS = 3
 
 /** Partidos ya importados, por id de CourtTrack. */
-export async function findByCourtrackIds(ids: string[]): Promise<Map<string, MatchRow>> {
+export async function findByCourtrackIds(org: Org, ids: string[]): Promise<Map<string, MatchRow>> {
   if (ids.length === 0) return new Map()
-  const { data, error } = await db().from('matches').select('*').in('courtrack_id', ids)
+  const { data, error } = await db().from('matches').select('*').eq('org_id', org.id).in('courtrack_id', ids)
   if (error) throw error
   return new Map(data.map((row) => [row.courtrack_id as string, row]))
 }
@@ -36,10 +37,16 @@ export async function findByCourtrackIds(ids: string[]): Promise<Map<string, Mat
  * Partido cargado a mano (sin courtrack_id) el mismo día contra el mismo rival, de la misma competición o sin
  * competición: es el mismo partido. Un amistoso manual ese día no se adopta.
  */
-export async function findManualMatch(playedOn: string, opponentTeamId: string, competitionId: string): Promise<MatchRow | null> {
+export async function findManualMatch(
+  org: Org,
+  playedOn: string,
+  opponentTeamId: string,
+  competitionId: string,
+): Promise<MatchRow | null> {
   const { data, error } = await db()
     .from('matches')
     .select('*')
+    .eq('org_id', org.id)
     .eq('played_on', playedOn)
     .eq('opponent_team_id', opponentTeamId)
     .is('courtrack_id', null)
@@ -52,8 +59,8 @@ export async function findManualMatch(playedOn: string, opponentTeamId: string, 
 }
 
 /** Primer slug libre: base, base-2, base-3... (misma regla que el dashboard). */
-async function freeSlug(base: string): Promise<string> {
-  const { data, error } = await db().from('matches').select('slug').like('slug', `${base}%`)
+async function freeSlug(org: Org, base: string): Promise<string> {
+  const { data, error } = await db().from('matches').select('slug').eq('org_id', org.id).like('slug', `${base}%`)
   if (error) throw error
   const taken = new Set(data.map((row) => row.slug))
   let slug = base
@@ -61,13 +68,13 @@ async function freeSlug(base: string): Promise<string> {
   return slug
 }
 
-export async function insertMatch(values: MatchValues, opponentName: string): Promise<{ id: string; slug: string }> {
+export async function insertMatch(org: Org, values: MatchValues, opponentName: string): Promise<{ id: string; slug: string }> {
   const base = matchSlugBase(values.played_on, opponentName)
   for (let attempt = 1; ; attempt += 1) {
-    const slug = await freeSlug(base)
+    const slug = await freeSlug(org, base)
     const { data, error } = await db()
       .from('matches')
-      .insert({ ...values, slug, set_scores: values.set_scores as unknown as Json })
+      .insert({ ...values, org_id: org.id, slug, set_scores: values.set_scores as unknown as Json })
       .select('id,slug')
       .single()
     // Un alta simultánea se quedó con el mismo slug: se recalcula.
@@ -77,11 +84,12 @@ export async function insertMatch(values: MatchValues, opponentName: string): Pr
   }
 }
 
-export async function updateMatch(id: string, values: MatchValues): Promise<void> {
+export async function updateMatch(org: Org, id: string, values: MatchValues): Promise<void> {
   const { error } = await db()
     .from('matches')
     .update({ ...values, set_scores: values.set_scores as unknown as Json })
     .eq('id', id)
+    .eq('org_id', org.id)
   if (error) throw error
 }
 

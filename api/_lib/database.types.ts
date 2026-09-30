@@ -1,9 +1,12 @@
-// Subconjunto del esquema de Supabase que usa este servicio. La fuente de verdad es el repo del dashboard
-// (coyotes-website/supabase/migrations y shared/database.types.ts, que se regenera con `npm run db:types`).
+// Subconjunto del esquema de Supabase que usa este servicio. La fuente de verdad es teamhub-api
+// (supabase/migrations y shared/database.types.ts, que se regenera con `npm run db:types`).
+// `org_id` (uuid) en teams/matches y `organization_id` (uuid) en las tablas de CourtTrack son OBLIGATORIOS en los
+// Insert aunque la base tenga un DEFAULT: así el compilador avisa si un alta olvida la organización.
 export type Json = string | number | boolean | null | { [key: string]: Json | undefined } | Json[]
 
 type TeamRow = {
   id: string
+  org_id: string
   name: string
   short_name: string | null
   is_own_team: boolean
@@ -16,6 +19,7 @@ type TeamRow = {
 
 type MatchRow = {
   id: string
+  org_id: string
   slug: string
   played_on: string
   start_time: string | null
@@ -39,6 +43,7 @@ type MatchRow = {
 type SyncLogRow = {
   id: string
   org_id: string
+  organization_id: string
   source: string
   status: string
   dry_run: boolean
@@ -52,6 +57,7 @@ type SyncLogRow = {
 type CompetitionRow = {
   id: string
   org_id: string
+  organization_id: string
   name: string
   kind: string
   created_at: string
@@ -61,6 +67,7 @@ type CompetitionRow = {
 type CourtrackLeagueRow = {
   id: string
   org_id: string
+  organization_id: string
   competition_id: string
   id_cliente: number
   cliente_name: string | null
@@ -83,10 +90,22 @@ type CourtrackLeagueRow = {
 type CourtrackTeamLinkRow = {
   id: string
   org_id: string
+  organization_id: string
   courtrack_name: string
   normalized_name: string
   team_id: string
   created_at: string
+}
+
+type OrganizationRow = {
+  id: string
+  slug: string
+  name: string
+  theme: Json
+  /** Cupo de syncs de CourtTrack en 24 h; null = el de SYNC_DAILY_LIMIT. */
+  courtrack_daily_limit: number | null
+  created_at: string
+  updated_at: string
 }
 
 type Optional<T, K extends keyof T> = Omit<T, K> & Partial<Pick<T, K>>
@@ -94,6 +113,12 @@ type Optional<T, K extends keyof T> = Omit<T, K> & Partial<Pick<T, K>>
 export type Database = {
   public: {
     Tables: {
+      organizations: {
+        Row: OrganizationRow
+        Insert: Optional<OrganizationRow, 'id' | 'theme' | 'courtrack_daily_limit' | 'created_at' | 'updated_at'>
+        Update: Partial<OrganizationRow>
+        Relationships: []
+      }
       teams: {
         Row: TeamRow
         Insert: Optional<
